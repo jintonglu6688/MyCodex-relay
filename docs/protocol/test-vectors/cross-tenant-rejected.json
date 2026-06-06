@@ -1,0 +1,6 @@
+{
+  "tenantId": "tenant_other",
+  "hostId": "host_demo",
+  "deviceId": "device_demo",
+  "expectedError": "route_not_found"
+}

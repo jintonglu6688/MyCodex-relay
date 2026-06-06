@@ -1,0 +1,9 @@
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo",
+  "inviteId": "invite_demo",
+  "oneTimePairingToken": "pairing-token-demo",
+  "deviceId": "device_demo",
+  "deviceDisplayName": "Android Phone",
+  "devicePublicKey": "debug-device-public-key"
+}

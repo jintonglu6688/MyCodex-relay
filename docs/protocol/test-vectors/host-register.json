@@ -1,0 +1,6 @@
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo",
+  "displayName": "MyCodex on Windows",
+  "hostPublicKey": "debug-host-public-key"
+}

@@ -1,0 +1,7 @@
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo",
+  "inviteId": "invite_demo",
+  "expiresAt": "2026-06-06T12:30:00Z",
+  "maxUses": 1
+}
