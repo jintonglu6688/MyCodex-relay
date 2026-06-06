@@ -93,6 +93,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			s.writeError(ws, envelope, errorCode(err))
 			continue
 		}
+		if code := validateSenderEnvelope(ws.session, envelope); code != "" {
+			s.writeError(ws, envelope, code)
+			continue
+		}
 		s.routeEnvelope(ws, envelope)
 	}
 }
@@ -218,6 +222,28 @@ func hostKey(tenantID string, hostID string) string {
 
 func deviceKey(tenantID string, hostID string, deviceID string) string {
 	return tenantID + "/" + hostID + "/" + deviceID
+}
+
+func validateSenderEnvelope(sender session.Session, envelope protocol.Envelope) string {
+	switch sender.ConnectionType {
+	case session.ConnectionHost:
+		if envelope.TenantID != sender.TenantID || envelope.HostID != sender.HostID {
+			return "identity_mismatch"
+		}
+		if envelope.Direction != protocol.DirectionWindowsToMobile {
+			return "direction_not_allowed"
+		}
+	case session.ConnectionDevice:
+		if envelope.TenantID != sender.TenantID || envelope.HostID != sender.HostID || envelope.DeviceID != sender.DeviceID {
+			return "identity_mismatch"
+		}
+		if envelope.Direction != protocol.DirectionMobileToWindows {
+			return "direction_not_allowed"
+		}
+	default:
+		return "identity_mismatch"
+	}
+	return ""
 }
 
 func errorCode(err error) string {

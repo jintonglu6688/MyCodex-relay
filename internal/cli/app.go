@@ -32,7 +32,7 @@ func RunWithContext(ctx context.Context, args []string, stdout io.Writer, stderr
 
 	switch args[0] {
 	case "help":
-		fmt.Fprintln(stdout, "commands: help, version, configure, serve, tenant")
+		fmt.Fprintln(stdout, "commands: help, version, configure, serve, tenant, debug")
 		return 0
 	case "version":
 		fmt.Fprintf(stdout, "mycodex-relay %s\n", Version)

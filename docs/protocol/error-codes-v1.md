@@ -11,6 +11,8 @@
 | `invite_not_found` | Invite ID does not exist under the tenant and host. |
 | `invite_expired` | Invite expiry time has passed. |
 | `invite_consumed` | Invite has already been used. |
+| `identity_mismatch` | Envelope identity does not match the connected session identity. |
+| `direction_not_allowed` | Connected session type is not allowed to send the requested direction. |
 | `route_not_found` | Target session is not connected. |
 | `quota_exceeded` | Tenant or global quota rejected the action. |
 | `message_too_large` | Envelope payload exceeds the configured limit. |

@@ -115,6 +115,104 @@ func TestWebSocketRejectsCrossTenantRoute(t *testing.T) {
 	}
 }
 
+func TestWebSocketRejectsDeviceEnvelopeTenantMismatchBeforeRouting(t *testing.T) {
+	server := NewServer(config.Default())
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantBHost := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_b&hostId=host_b&sessionId=host_b_session")
+	defer tenantBHost.Close(websocket.StatusNormalClosure, "")
+	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_a_session")
+	defer device.Close(websocket.StatusNormalClosure, "")
+
+	message := protocol.Envelope{
+		ProtocolVersion: 1,
+		MessageID:       "spoof-tenant",
+		TenantID:        "tenant_b",
+		HostID:          "host_b",
+		DeviceID:        "device_a",
+		SessionID:       "device_a_session",
+		Direction:       protocol.DirectionMobileToWindows,
+		Kind:            "rpc.request",
+		Sequence:        1,
+		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
+		Payload:         "{}",
+	}
+	writeEnvelope(t, ctx, device, message)
+	response := readEnvelope(t, ctx, device)
+	if response.Kind != "system.error" || response.Payload != "{\"code\":\"identity_mismatch\"}" {
+		t.Fatalf("expected identity_mismatch error envelope, got %+v", response)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer readCancel()
+	if _, _, err := tenantBHost.Read(readCtx); err == nil {
+		t.Fatalf("tenant_b host should not receive spoofed device message")
+	}
+}
+
+func TestWebSocketRejectsDeviceSendingWindowsToMobile(t *testing.T) {
+	server := NewServer(config.Default())
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_a_session")
+	defer device.Close(websocket.StatusNormalClosure, "")
+
+	message := protocol.Envelope{
+		ProtocolVersion: 1,
+		MessageID:       "device-wrong-direction",
+		TenantID:        "tenant_a",
+		HostID:          "host_a",
+		DeviceID:        "device_a",
+		SessionID:       "device_a_session",
+		Direction:       protocol.DirectionWindowsToMobile,
+		Kind:            "rpc.response",
+		Sequence:        1,
+		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
+		Payload:         "{}",
+	}
+	writeEnvelope(t, ctx, device, message)
+	response := readEnvelope(t, ctx, device)
+	if response.Kind != "system.error" || response.Payload != "{\"code\":\"direction_not_allowed\"}" {
+		t.Fatalf("expected direction_not_allowed error envelope, got %+v", response)
+	}
+}
+
+func TestWebSocketRejectsHostSendingMobileToWindows(t *testing.T) {
+	server := NewServer(config.Default())
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_a_session")
+	defer host.Close(websocket.StatusNormalClosure, "")
+
+	message := protocol.Envelope{
+		ProtocolVersion: 1,
+		MessageID:       "host-wrong-direction",
+		TenantID:        "tenant_a",
+		HostID:          "host_a",
+		DeviceID:        "device_a",
+		SessionID:       "host_a_session",
+		Direction:       protocol.DirectionMobileToWindows,
+		Kind:            "rpc.request",
+		Sequence:        1,
+		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
+		Payload:         "{}",
+	}
+	writeEnvelope(t, ctx, host, message)
+	response := readEnvelope(t, ctx, host)
+	if response.Kind != "system.error" || response.Payload != "{\"code\":\"direction_not_allowed\"}" {
+		t.Fatalf("expected direction_not_allowed error envelope, got %+v", response)
+	}
+}
+
 func dialRelay(t *testing.T, ctx context.Context, serverURL string, query string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?" + query

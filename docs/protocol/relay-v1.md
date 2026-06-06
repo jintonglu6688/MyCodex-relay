@@ -62,6 +62,16 @@ After the socket is accepted, each text WebSocket message is one JSON `Envelope`
 - `mobile_to_windows` to the active host session keyed by `tenantId + hostId`.
 - `windows_to_mobile` to the active device session keyed by `tenantId + hostId + deviceId`.
 
+Before route lookup, the relay validates envelope identity against the connected session identity:
+
+- Host sessions may send only `windows_to_mobile`.
+- Host envelopes must use the connected session's `tenantId` and `hostId`.
+- Host envelopes may target any `deviceId` under that connected tenant and host.
+- Device sessions may send only `mobile_to_windows`.
+- Device envelopes must use the connected session's `tenantId`, `hostId`, and `deviceId`.
+
+If the envelope identity does not match the connected session, the sender receives `identity_mismatch`. If the session type is not allowed to send the envelope direction, the sender receives `direction_not_allowed`. Neither error is routed to another session.
+
 When a route is missing, the sender receives a `system.error` envelope with payload:
 
 ```json
