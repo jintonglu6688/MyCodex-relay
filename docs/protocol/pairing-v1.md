@@ -36,4 +36,22 @@ Pairing connects one mobile device to one Windows host under one tenant.
 5. Relay validates tenant, host, invite token, expiry, and consumption state.
 6. Relay forwards the claim to Windows.
 7. Windows approves or rejects the claim.
-8. Approved devices can open future sessions without the invite token.
+8. Approval persists a device binding under `tenantId + hostId + deviceId`.
+9. Approved, non-revoked devices can open future sessions without the invite token.
+
+Invite consumption is atomic. If two claim attempts race for the same invite, only one can consume it and the other receives `invite_consumed`.
+
+## Device Binding
+
+Approved devices are stored with:
+
+- tenant ID
+- host ID
+- device ID
+- display name
+- platform
+- device public key
+- revoked state
+- bind timestamp
+
+Device lookup is tenant and host scoped. A device ID bound under one tenant or host must not resolve under another tenant or host. Revoked devices are retained for auditability but fail active lookup.

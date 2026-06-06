@@ -26,6 +26,24 @@ go run ./cmd/mycodex-relay version
 
 The first milestone is a multi-tenant relay MVP with mock Windows host and mock mobile commands.
 
+## CLI
+
+```powershell
+go run ./cmd/mycodex-relay configure --config relay-config.json --state relay-state.db --public-host relay.example.com
+go run ./cmd/mycodex-relay tenant create --config relay-config.json --name Alice
+go run ./cmd/mycodex-relay tenant list --config relay-config.json
+go run ./cmd/mycodex-relay tenant show --config relay-config.json --tenant <tenantId>
+go run ./cmd/mycodex-relay tenant disable --config relay-config.json --tenant <tenantId>
+go run ./cmd/mycodex-relay tenant enable --config relay-config.json --tenant <tenantId>
+go run ./cmd/mycodex-relay tenant rotate-secret --config relay-config.json --tenant <tenantId>
+go run ./cmd/mycodex-relay tenant print-connection --config relay-config.json --tenant <tenantId>
+go run ./cmd/mycodex-relay serve --config relay-config.json
+go run ./cmd/mycodex-relay debug mobile --tenant tenant_demo --host host_demo --device device_demo --value hello
+go run ./cmd/mycodex-relay debug host --tenant tenant_demo --host host_demo --device device_demo --value hello
+```
+
+Tenant secrets are printed only by `tenant create` and `tenant rotate-secret`.
+
 ## Build
 
 Windows:

@@ -7,6 +7,7 @@
 | `auth_failed` | Tenant authentication failed. |
 | `host_not_found` | Host ID is not registered under the tenant. |
 | `device_not_found` | Device ID is not bound under the host. |
+| `device_revoked` | Device binding exists but is revoked and cannot be used. |
 | `invite_not_found` | Invite ID does not exist under the tenant and host. |
 | `invite_expired` | Invite expiry time has passed. |
 | `invite_consumed` | Invite has already been used. |
