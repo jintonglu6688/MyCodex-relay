@@ -134,20 +134,37 @@ func (s *Service) ClaimInvite(request ClaimRequest) (Claim, error) {
 }
 
 func (s *Service) ApproveClaim(claim Claim) error {
+	_, err := s.ApproveClaimWithToken(claim)
+	return err
+}
+
+func (s *Service) ApproveClaimWithToken(claim Claim) (string, error) {
 	if strings.TrimSpace(claim.TenantID) == "" || strings.TrimSpace(claim.HostID) == "" || strings.TrimSpace(claim.DeviceID) == "" {
-		return fmt.Errorf("tenantId, hostId, and deviceId are required")
+		return "", fmt.Errorf("tenantId, hostId, and deviceId are required")
+	}
+	token, err := security.GenerateToken(32)
+	if err != nil {
+		return "", err
+	}
+	hash, err := security.HashSecret(token)
+	if err != nil {
+		return "", err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.store.DB().Exec(
-		`insert into devices (tenant_id, host_id, device_id, display_name, platform, device_public_key, revoked, bound_at, last_seen_at)
-values (?, ?, ?, ?, ?, ?, 0, ?, null)
+	_, err = s.store.DB().Exec(
+		`insert into devices (tenant_id, host_id, device_id, display_name, platform, device_public_key, device_token_hash, revoked, bound_at, last_seen_at)
+values (?, ?, ?, ?, ?, ?, ?, 0, ?, null)
 on conflict(tenant_id, host_id, device_id) do update set
   display_name = excluded.display_name,
   platform = excluded.platform,
   device_public_key = excluded.device_public_key,
+  device_token_hash = excluded.device_token_hash,
   revoked = 0`,
-		claim.TenantID, claim.HostID, claim.DeviceID, claim.DeviceDisplayName, claim.Platform, claim.DevicePublicKey, now)
-	return err
+		claim.TenantID, claim.HostID, claim.DeviceID, claim.DeviceDisplayName, claim.Platform, claim.DevicePublicKey, hash, now)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 func (s *Service) GetDevice(tenantID string, hostID string, deviceID string) (Device, error) {
@@ -198,6 +215,21 @@ func (s *Service) RevokeDevice(tenantID string, hostID string, deviceID string) 
 		return fmt.Errorf("device_not_found")
 	}
 	return nil
+}
+
+func (s *Service) VerifyDeviceToken(tenantID string, hostID string, deviceID string, token string) bool {
+	row := s.store.DB().QueryRow(
+		"select device_token_hash, revoked from devices where tenant_id = ? and host_id = ? and device_id = ?",
+		tenantID, hostID, deviceID)
+	var hash sql.NullString
+	var revoked int
+	if err := row.Scan(&hash, &revoked); err != nil {
+		return false
+	}
+	if revoked != 0 || !hash.Valid || hash.String == "" {
+		return false
+	}
+	return security.VerifySecret(hash.String, token)
 }
 
 type deviceScanner interface {

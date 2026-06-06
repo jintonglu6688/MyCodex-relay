@@ -10,13 +10,17 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/mycodex/mycodex-relay/internal/config"
+	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
 	"github.com/mycodex/mycodex-relay/internal/session"
+	"github.com/mycodex/mycodex-relay/internal/store"
+	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
 type Server struct {
 	config config.Config
 	mux    *http.ServeMux
+	store  *store.Store
 
 	mu      sync.RWMutex
 	hosts   map[string]*webSocketSession
@@ -32,6 +36,12 @@ func NewServer(cfg config.Config) *Server {
 	}
 	server.mux.HandleFunc("/health", server.handleHealth)
 	server.mux.HandleFunc("/v1/ws", server.handleWebSocket)
+	return server
+}
+
+func NewServerWithStore(cfg config.Config, st *store.Store) *Server {
+	server := NewServer(cfg)
+	server.store = st
 	return server
 }
 
@@ -63,6 +73,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	activeSession, err := sessionFromRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !s.authenticateSession(r, activeSession) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -98,6 +112,30 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		s.routeEnvelope(ws, envelope)
+	}
+}
+
+func (s *Server) authenticateSession(r *http.Request, activeSession session.Session) bool {
+	if s.store == nil {
+		return true
+	}
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		return false
+	}
+	switch activeSession.ConnectionType {
+	case session.ConnectionHost:
+		tenantService := tenant.NewService(s.store)
+		item, err := tenantService.Get(activeSession.TenantID)
+		if err != nil || !item.Enabled {
+			return false
+		}
+		return tenant.VerifySecretHash(item.SecretHash, token)
+	case session.ConnectionDevice:
+		pairingService := pairing.NewService(s.store)
+		return pairingService.VerifyDeviceToken(activeSession.TenantID, activeSession.HostID, activeSession.DeviceID, token)
+	default:
+		return false
 	}
 }
 
@@ -158,6 +196,10 @@ func (s *Server) routeEnvelope(sender *webSocketSession, envelope protocol.Envel
 
 func (s *Server) writeError(target *webSocketSession, source protocol.Envelope, code string) {
 	correlationID := source.MessageID
+	payload, err := json.Marshal(protocol.ErrorPayload{Code: code})
+	if err != nil {
+		payload = []byte("{\"code\":\"internal_error\"}")
+	}
 	errorEnvelope := protocol.Envelope{
 		ProtocolVersion: 1,
 		MessageID:       "error-" + source.MessageID,
@@ -169,7 +211,7 @@ func (s *Server) writeError(target *webSocketSession, source protocol.Envelope, 
 		Direction:       protocol.DirectionSystem,
 		Kind:            "system.error",
 		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{\"code\":\"" + code + "\"}",
+		Payload:         string(payload),
 	}
 	if errorEnvelope.MessageID == "error-" {
 		errorEnvelope.MessageID = "error"
@@ -214,6 +256,14 @@ func sessionFromRequest(r *http.Request) (session.Session, error) {
 		return session.Session{}, fmt.Errorf("connection must be host or device")
 	}
 	return result, nil
+}
+
+func bearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
+		return "", false
+	}
+	return header[len(prefix):], true
 }
 
 func hostKey(tenantID string, hostID string) string {

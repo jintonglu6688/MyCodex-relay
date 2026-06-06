@@ -5,6 +5,7 @@
 | `tenant_not_found` | Tenant ID does not exist. |
 | `tenant_disabled` | Tenant is disabled. |
 | `auth_failed` | Tenant authentication failed. |
+| `unauthorized` | WebSocket upgrade credentials are missing or invalid. |
 | `host_not_found` | Host ID is not registered under the tenant. |
 | `device_not_found` | Device ID is not bound under the host. |
 | `device_revoked` | Device binding exists but is revoked and cannot be used. |

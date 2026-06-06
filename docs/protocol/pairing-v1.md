@@ -36,8 +36,8 @@ Pairing connects one mobile device to one Windows host under one tenant.
 5. Relay validates tenant, host, invite token, expiry, and consumption state.
 6. Relay forwards the claim to Windows.
 7. Windows approves or rejects the claim.
-8. Approval persists a device binding under `tenantId + hostId + deviceId`.
-9. Approved, non-revoked devices can open future sessions without the invite token.
+8. Approval persists a device binding under `tenantId + hostId + deviceId` and returns a device token once.
+9. Approved, non-revoked devices use the device token as the WebSocket bearer credential for future sessions.
 
 Invite consumption is atomic. If two claim attempts race for the same invite, only one can consume it and the other receives `invite_consumed`.
 
@@ -51,7 +51,10 @@ Approved devices are stored with:
 - display name
 - platform
 - device public key
+- hashed device token
 - revoked state
 - bind timestamp
 
 Device lookup is tenant and host scoped. A device ID bound under one tenant or host must not resolve under another tenant or host. Revoked devices are retained for auditability but fail active lookup.
+
+Device tokens are shown only at approval time. The relay stores only a hash and verifies future WebSocket sessions with constant-time secret verification.

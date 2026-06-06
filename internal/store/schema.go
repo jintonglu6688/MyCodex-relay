@@ -28,6 +28,7 @@ create table if not exists devices (
   display_name text not null,
   platform text not null,
   device_public_key text not null,
+  device_token_hash text,
   revoked integer not null,
   bound_at text not null,
   last_seen_at text,

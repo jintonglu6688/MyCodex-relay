@@ -40,9 +40,22 @@ go run ./cmd/mycodex-relay tenant print-connection --config relay-config.json --
 go run ./cmd/mycodex-relay serve --config relay-config.json
 go run ./cmd/mycodex-relay debug mobile --tenant tenant_demo --host host_demo --device device_demo --value hello
 go run ./cmd/mycodex-relay debug host --tenant tenant_demo --host host_demo --device device_demo --value hello
+go run ./cmd/mycodex-relay debug auth-header --token <tenant-or-device-token>
 ```
 
 Tenant secrets are printed only by `tenant create` and `tenant rotate-secret`.
+
+Authenticated WebSocket sessions use an HTTP header:
+
+```text
+Authorization: Bearer <tenant-or-device-token>
+```
+
+Host sessions use the tenant secret. Device sessions use the token returned by pairing approval.
+
+## CI
+
+GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows job also runs `scripts\build.ps1 -Version 0.1.0-ci`.
 
 ## Build
 

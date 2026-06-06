@@ -117,7 +117,7 @@ func runServe(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 		return 1
 	}
 	defer st.Close()
-	server := relay.NewServer(cfg)
+	server := relay.NewServerWithStore(cfg, st)
 	fmt.Fprintf(stdout, "serve initialized configPath=%s statePath=%s\n", *configPath, cfg.StatePath)
 	if ctx.Err() != nil {
 		return 0
@@ -318,7 +318,20 @@ func runTenantPrintConnection(args []string, stdout io.Writer, stderr io.Writer)
 
 func runDebug(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stdout, "debug commands: host, mobile")
+		fmt.Fprintln(stdout, "debug commands: host, mobile, auth-header")
+		return 0
+	}
+	if args[0] == "auth-header" {
+		flags := newFlagSet("debug auth-header", stderr)
+		token := flags.String("token", "", "bearer token")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if *token == "" {
+			fmt.Fprintln(stderr, "token is required")
+			return 2
+		}
+		fmt.Fprintf(stdout, "Authorization=Bearer %s\n", *token)
 		return 0
 	}
 	flags := newFlagSet("debug "+args[0], stderr)

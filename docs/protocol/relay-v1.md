@@ -57,6 +57,19 @@ Required query fields:
 - `deviceId` is required for device sessions.
 - `sessionId` is optional; the relay assigns a fallback session ID when omitted.
 
+Authenticated relay servers require an HTTP authorization header during the WebSocket upgrade:
+
+```text
+Authorization: Bearer <credential>
+```
+
+Credential rules:
+
+- Host sessions use the tenant secret returned by `tenant create` or `tenant rotate-secret`.
+- Device sessions use the device token returned when Windows approves a pairing claim.
+- The relay verifies credentials against stored hashes before the socket is accepted.
+- Credentials must not be placed in query parameters.
+
 After the socket is accepted, each text WebSocket message is one JSON `Envelope`. The relay validates each envelope, then routes:
 
 - `mobile_to_windows` to the active host session keyed by `tenantId + hostId`.

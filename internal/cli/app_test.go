@@ -198,6 +198,18 @@ func TestRunDebugCommandsEmitDeterministicPayloads(t *testing.T) {
 	}
 }
 
+func TestRunDebugAuthHeaderFormatsBearerToken(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Run([]string{"debug", "auth-header", "--token", "secret-value"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("debug auth-header failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.String() != "Authorization=Bearer secret-value\n" {
+		t.Fatalf("unexpected auth header output: %q", stdout.String())
+	}
+}
+
 func loadConfigForTest(path string) (config.Config, error) {
 	return config.Load(path)
 }

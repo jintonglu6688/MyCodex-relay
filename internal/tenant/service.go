@@ -28,6 +28,10 @@ func NewService(store *store.Store) *Service {
 	return &Service{store: store}
 }
 
+func VerifySecretHash(hash string, secret string) bool {
+	return security.VerifySecret(hash, secret)
+}
+
 func (s *Service) Create(displayName string) (Tenant, string, error) {
 	name := strings.TrimSpace(displayName)
 	if name == "" {

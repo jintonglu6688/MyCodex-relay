@@ -43,6 +43,66 @@ func TestApproveClaimPersistsAndRevokesDevice(t *testing.T) {
 	}
 }
 
+func TestApproveClaimWithTokenStoresHashedDeviceToken(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	service := NewService(st)
+	claim := Claim{
+		TenantID:          "tenant_a",
+		HostID:            "host_a",
+		DeviceID:          "device_a",
+		DeviceDisplayName: "Android",
+		DevicePublicKey:   "device-public",
+		Platform:          "android",
+	}
+	token, err := service.ApproveClaimWithToken(claim)
+	if err != nil {
+		t.Fatalf("ApproveClaimWithToken failed: %v", err)
+	}
+	if token == "" {
+		t.Fatalf("expected generated device token")
+	}
+	if !service.VerifyDeviceToken("tenant_a", "host_a", "device_a", token) {
+		t.Fatalf("expected generated token to verify")
+	}
+	if service.VerifyDeviceToken("tenant_a", "host_a", "device_a", "wrong") {
+		t.Fatalf("expected wrong token to fail")
+	}
+
+	row := st.DB().QueryRow("select device_token_hash from devices where tenant_id = ? and host_id = ? and device_id = ?", "tenant_a", "host_a", "device_a")
+	var hash string
+	if err := row.Scan(&hash); err != nil {
+		t.Fatalf("scan token hash: %v", err)
+	}
+	if hash == "" || hash == token {
+		t.Fatalf("expected stored hash, got %q for token %q", hash, token)
+	}
+}
+
+func TestRevokedDeviceTokenDoesNotVerify(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	service := NewService(st)
+	token, err := service.ApproveClaimWithToken(Claim{TenantID: "tenant_a", HostID: "host_a", DeviceID: "device_a", DeviceDisplayName: "Android", DevicePublicKey: "key", Platform: "android"})
+	if err != nil {
+		t.Fatalf("ApproveClaimWithToken failed: %v", err)
+	}
+	if err := service.RevokeDevice("tenant_a", "host_a", "device_a"); err != nil {
+		t.Fatalf("RevokeDevice failed: %v", err)
+	}
+	if service.VerifyDeviceToken("tenant_a", "host_a", "device_a", token) {
+		t.Fatalf("expected revoked device token to fail verification")
+	}
+}
+
 func TestDevicesAreTenantAndHostScoped(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
 	if err != nil {

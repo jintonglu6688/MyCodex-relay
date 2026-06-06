@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/mycodex/mycodex-relay/internal/config"
+	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
+	"github.com/mycodex/mycodex-relay/internal/store"
+	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -213,10 +217,102 @@ func TestWebSocketRejectsHostSendingMobileToWindows(t *testing.T) {
 	}
 }
 
+func TestWebSocketAuthenticatedHostAndDeviceRoutePingPong(t *testing.T) {
+	st, tenantID, tenantSecret, deviceToken := authenticatedRelayState(t)
+	defer st.Close()
+	server := NewServerWithStore(config.Default(), st)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	host := dialRelayWithAuth(t, ctx, httpServer.URL, "connection=host&tenantId="+tenantID+"&hostId=host_a&sessionId=host_session", tenantSecret)
+	defer host.Close(websocket.StatusNormalClosure, "")
+	device := dialRelayWithAuth(t, ctx, httpServer.URL, "connection=device&tenantId="+tenantID+"&hostId=host_a&deviceId=device_a&sessionId=device_session", deviceToken)
+	defer device.Close(websocket.StatusNormalClosure, "")
+
+	ping := protocol.Envelope{ProtocolVersion: 1, MessageID: "auth-ping", TenantID: tenantID, HostID: "host_a", DeviceID: "device_a", SessionID: "device_session", Direction: protocol.DirectionMobileToWindows, Kind: "rpc.request", Sequence: 1, PayloadEncoding: protocol.PayloadEncodingPlainJSON, Payload: "{}"}
+	writeEnvelope(t, ctx, device, ping)
+	if received := readEnvelope(t, ctx, host); received.MessageID != "auth-ping" {
+		t.Fatalf("unexpected routed ping: %+v", received)
+	}
+}
+
+func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
+	st, tenantID, _, _ := authenticatedRelayState(t)
+	defer st.Close()
+	server := NewServerWithStore(config.Default(), st)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=host&tenantId=" + tenantID + "&hostId=host_a"
+	_, response, err := websocket.Dial(ctx, wsURL, nil)
+	if err == nil {
+		t.Fatalf("expected missing authorization to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got response=%v err=%v", response, err)
+	}
+}
+
+func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
+	st, tenantID, _, _ := authenticatedRelayState(t)
+	defer st.Close()
+	server := NewServerWithStore(config.Default(), st)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=device&tenantId=" + tenantID + "&hostId=host_a&deviceId=device_a"
+	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer wrong"}}})
+	if err == nil {
+		t.Fatalf("expected invalid device authorization to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got response=%v err=%v", response, err)
+	}
+}
+
+func TestWebSocketRejectsRevokedDeviceAuthorization(t *testing.T) {
+	st, tenantID, _, deviceToken := authenticatedRelayState(t)
+	defer st.Close()
+	pairingService := pairing.NewService(st)
+	if err := pairingService.RevokeDevice(tenantID, "host_a", "device_a"); err != nil {
+		t.Fatalf("revoke device: %v", err)
+	}
+	server := NewServerWithStore(config.Default(), st)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=device&tenantId=" + tenantID + "&hostId=host_a&deviceId=device_a"
+	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + deviceToken}}})
+	if err == nil {
+		t.Fatalf("expected revoked device authorization to fail")
+	}
+	if response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got response=%v err=%v", response, err)
+	}
+}
+
 func dialRelay(t *testing.T, ctx context.Context, serverURL string, query string) *websocket.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?" + query
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial failed: %v", err)
+	}
+	return conn
+}
+
+func dialRelayWithAuth(t *testing.T, ctx context.Context, serverURL string, query string, token string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?" + query
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}}})
 	if err != nil {
 		t.Fatalf("websocket dial failed: %v", err)
 	}
@@ -248,4 +344,23 @@ func readEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn) proto
 		t.Fatalf("unmarshal envelope: %v; data=%s", err, string(data))
 	}
 	return envelope
+}
+
+func authenticatedRelayState(t *testing.T) (*store.Store, string, string, string) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	tenantService := tenant.NewService(st)
+	created, tenantSecret, err := tenantService.Create("Alice")
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	pairingService := pairing.NewService(st)
+	deviceToken, err := pairingService.ApproveClaimWithToken(pairing.Claim{TenantID: created.TenantID, HostID: "host_a", DeviceID: "device_a", DeviceDisplayName: "Android", DevicePublicKey: "key", Platform: "android"})
+	if err != nil {
+		t.Fatalf("approve device: %v", err)
+	}
+	return st, created.TenantID, tenantSecret, deviceToken
 }
