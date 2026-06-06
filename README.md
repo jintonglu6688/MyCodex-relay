@@ -25,3 +25,17 @@ go run ./cmd/mycodex-relay version
 ```
 
 The first milestone is a multi-tenant relay MVP with mock Windows host and mock mobile commands.
+
+## Build
+
+Windows:
+
+```powershell
+scripts\build.ps1 -Version 0.1.0-dev
+```
+
+Linux/macOS:
+
+```bash
+sh scripts/build.sh 0.1.0-dev
+```

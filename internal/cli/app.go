@@ -5,7 +5,7 @@ import (
 	"io"
 )
 
-const Version = "dev"
+var Version = "dev"
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
