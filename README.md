@@ -17,3 +17,11 @@ Initial scope:
 - Tenant and device isolation
 - Lightweight cross-platform deployment
 
+## Development
+
+```powershell
+go test ./...
+go run ./cmd/mycodex-relay version
+```
+
+The first milestone is a multi-tenant relay MVP with mock Windows host and mock mobile commands.
