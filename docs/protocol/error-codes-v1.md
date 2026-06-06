@@ -15,6 +15,9 @@
 | `identity_mismatch` | Envelope identity does not match the connected session identity. |
 | `direction_not_allowed` | Connected session type is not allowed to send the requested direction. |
 | `route_not_found` | Target session is not connected. |
+| `invalid_json` | HTTP JSON request body is malformed or contains unexpected fields. |
+| `method_not_allowed` | HTTP endpoint was called with the wrong method. |
+| `store_required` | Endpoint requires a store-backed relay server. |
 | `quota_exceeded` | Tenant or global quota rejected the action. |
 | `message_too_large` | Envelope payload exceeds the configured limit. |
 | `invalid_envelope` | Envelope failed protocol validation. |

@@ -53,6 +53,19 @@ Authorization: Bearer <tenant-or-device-token>
 
 Host sessions use the tenant secret. Device sessions use the token returned by pairing approval.
 
+## HTTP API
+
+Store-backed relay servers expose the server-side integration API:
+
+- `POST /v1/hosts/register`
+- `POST /v1/pairing/invites`
+- `POST /v1/pairing/claim`
+- `POST /v1/pairing/approve`
+- `GET /v1/devices?tenantId=<tenantId>&hostId=<hostId>`
+- `POST /v1/devices/revoke`
+
+Host management endpoints require `Authorization: Bearer <tenantSecret>`. Device tokens are returned only by pairing approval and are never included in device list responses.
+
 ## CI
 
 GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows job also runs `scripts\build.ps1 -Version 0.1.0-ci`.

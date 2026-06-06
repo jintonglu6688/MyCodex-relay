@@ -94,3 +94,86 @@ When a route is missing, the sender receives a `system.error` envelope with payl
 ## Tenant Isolation
 
 Every route lookup uses `tenantId` together with `hostId`, `deviceId`, or `sessionId`. A route that exists under another tenant must be treated as missing.
+
+## HTTP API
+
+All authenticated host management endpoints use:
+
+```text
+Authorization: Bearer <tenantSecret>
+```
+
+The relay verifies the tenant secret against the stored tenant hash. Responses are JSON and error responses use:
+
+```json
+{"code":"unauthorized"}
+```
+
+### Register Host
+
+```text
+POST /v1/hosts/register
+```
+
+Request:
+
+```json
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo",
+  "displayName": "MyCodex on Windows",
+  "hostPublicKey": "debug-host-public-key"
+}
+```
+
+Response:
+
+```json
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo"
+}
+```
+
+### Create Pairing Invite
+
+```text
+POST /v1/pairing/invites
+```
+
+Request:
+
+```json
+{
+  "tenantId": "tenant_demo",
+  "hostId": "host_demo",
+  "ttlSeconds": 600
+}
+```
+
+Response includes `inviteId`, `oneTimePairingToken`, and `expiresAt`. The pairing token is returned once.
+
+### Claim Pairing Invite
+
+```text
+POST /v1/pairing/claim
+```
+
+This endpoint is called by mobile with the invite token. It validates and consumes the invite, then returns the claimed device fields for host approval.
+
+### Approve Pairing
+
+```text
+POST /v1/pairing/approve
+```
+
+This endpoint is called by the host with the tenant secret. It persists the device binding and returns `deviceToken` once. Mobile uses that device token as the WebSocket bearer credential.
+
+### Device List And Revoke
+
+```text
+GET /v1/devices?tenantId=tenant_demo&hostId=host_demo
+POST /v1/devices/revoke
+```
+
+Device list responses never include device tokens or token hashes. Revoke marks a device unusable for future WebSocket authentication.

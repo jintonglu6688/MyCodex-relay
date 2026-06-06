@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/mycodex/mycodex-relay/internal/config"
+	hostsvc "github.com/mycodex/mycodex-relay/internal/host"
 	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
 	"github.com/mycodex/mycodex-relay/internal/session"
@@ -36,6 +38,12 @@ func NewServer(cfg config.Config) *Server {
 	}
 	server.mux.HandleFunc("/health", server.handleHealth)
 	server.mux.HandleFunc("/v1/ws", server.handleWebSocket)
+	server.mux.HandleFunc("/v1/hosts/register", server.handleRegisterHost)
+	server.mux.HandleFunc("/v1/pairing/invites", server.handleCreateInvite)
+	server.mux.HandleFunc("/v1/pairing/claim", server.handleClaimInvite)
+	server.mux.HandleFunc("/v1/pairing/approve", server.handleApprovePairing)
+	server.mux.HandleFunc("/v1/devices", server.handleListDevices)
+	server.mux.HandleFunc("/v1/devices/revoke", server.handleRevokeDevice)
 	return server
 }
 
@@ -67,6 +75,201 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("{\"status\":\"ok\"}\n"))
+}
+
+func (s *Server) handleRegisterHost(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID      string `json:"tenantId"`
+		HostID        string `json:"hostId"`
+		DisplayName   string `json:"displayName"`
+		HostPublicKey string `json:"hostPublicKey"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	if !s.authorizeTenant(w, r, request.TenantID) {
+		return
+	}
+	service := hostsvc.NewService(s.store)
+	if err := service.RegisterHost(request.TenantID, request.HostID, request.DisplayName, request.HostPublicKey); err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"tenantId": request.TenantID, "hostId": request.HostID})
+}
+
+func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID   string `json:"tenantId"`
+		HostID     string `json:"hostId"`
+		TTLSeconds int    `json:"ttlSeconds"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	if !s.authorizeTenant(w, r, request.TenantID) {
+		return
+	}
+	ttl := request.TTLSeconds
+	if ttl <= 0 {
+		ttl = 600
+	}
+	service := pairing.NewService(s.store)
+	invite, token, err := service.CreateInvite(request.TenantID, request.HostID, time.Now().UTC().Add(time.Duration(ttl)*time.Second))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"tenantId":            invite.TenantID,
+		"hostId":              invite.HostID,
+		"inviteId":            invite.InviteID,
+		"oneTimePairingToken": token,
+		"expiresAt":           invite.ExpiresAt.Format(time.RFC3339Nano),
+	})
+}
+
+func (s *Server) handleClaimInvite(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID            string `json:"tenantId"`
+		HostID              string `json:"hostId"`
+		InviteID            string `json:"inviteId"`
+		OneTimePairingToken string `json:"oneTimePairingToken"`
+		DeviceID            string `json:"deviceId"`
+		DeviceDisplayName   string `json:"deviceDisplayName"`
+		DevicePublicKey     string `json:"devicePublicKey"`
+		Platform            string `json:"platform"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	service := pairing.NewService(s.store)
+	claim, err := service.ClaimInvite(pairing.ClaimRequest{
+		TenantID:          request.TenantID,
+		HostID:            request.HostID,
+		InviteID:          request.InviteID,
+		Token:             request.OneTimePairingToken,
+		DeviceID:          request.DeviceID,
+		DeviceDisplayName: request.DeviceDisplayName,
+		DevicePublicKey:   request.DevicePublicKey,
+		Platform:          request.Platform,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"tenantId":          claim.TenantID,
+		"hostId":            claim.HostID,
+		"inviteId":          claim.InviteID,
+		"deviceId":          claim.DeviceID,
+		"deviceDisplayName": claim.DeviceDisplayName,
+		"devicePublicKey":   claim.DevicePublicKey,
+		"platform":          claim.Platform,
+	})
+}
+
+func (s *Server) handleApprovePairing(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID          string `json:"tenantId"`
+		HostID            string `json:"hostId"`
+		DeviceID          string `json:"deviceId"`
+		DeviceDisplayName string `json:"deviceDisplayName"`
+		DevicePublicKey   string `json:"devicePublicKey"`
+		Platform          string `json:"platform"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	if !s.authorizeTenant(w, r, request.TenantID) {
+		return
+	}
+	service := pairing.NewService(s.store)
+	token, err := service.ApproveClaimWithToken(pairing.Claim{
+		TenantID:          request.TenantID,
+		HostID:            request.HostID,
+		DeviceID:          request.DeviceID,
+		DeviceDisplayName: request.DeviceDisplayName,
+		DevicePublicKey:   request.DevicePublicKey,
+		Platform:          request.Platform,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"tenantId": request.TenantID, "hostId": request.HostID, "deviceId": request.DeviceID, "deviceToken": token})
+}
+
+func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	tenantID := r.URL.Query().Get("tenantId")
+	hostID := r.URL.Query().Get("hostId")
+	if !s.authorizeTenant(w, r, tenantID) {
+		return
+	}
+	service := pairing.NewService(s.store)
+	devices, err := service.ListDevices(tenantID, hostID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	type deviceResponse struct {
+		TenantID    string `json:"tenantId"`
+		HostID      string `json:"hostId"`
+		DeviceID    string `json:"deviceId"`
+		DisplayName string `json:"displayName"`
+		Platform    string `json:"platform"`
+		BoundAt     string `json:"boundAt"`
+	}
+	response := make([]deviceResponse, 0, len(devices))
+	for _, device := range devices {
+		response = append(response, deviceResponse{
+			TenantID:    device.TenantID,
+			HostID:      device.HostID,
+			DeviceID:    device.DeviceID,
+			DisplayName: device.DisplayName,
+			Platform:    device.Platform,
+			BoundAt:     device.BoundAt.Format(time.RFC3339Nano),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": response})
+}
+
+func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID string `json:"tenantId"`
+		HostID   string `json:"hostId"`
+		DeviceID string `json:"deviceId"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	if !s.authorizeTenant(w, r, request.TenantID) {
+		return
+	}
+	service := pairing.NewService(s.store)
+	if err := service.RevokeDevice(request.TenantID, request.HostID, request.DeviceID); err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tenantId": request.TenantID, "hostId": request.HostID, "deviceId": request.DeviceID, "revoked": true})
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +340,51 @@ func (s *Server) authenticateSession(r *http.Request, activeSession session.Sess
 	default:
 		return false
 	}
+}
+
+func (s *Server) authorizeTenant(w http.ResponseWriter, r *http.Request, tenantID string) bool {
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorPayload{Code: "store_required"})
+		return false
+	}
+	token, ok := bearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, protocol.ErrorPayload{Code: "unauthorized"})
+		return false
+	}
+	tenantService := tenant.NewService(s.store)
+	item, err := tenantService.Get(tenantID)
+	if err != nil || !item.Enabled || !tenant.VerifySecretHash(item.SecretHash, token) {
+		writeJSON(w, http.StatusUnauthorized, protocol.ErrorPayload{Code: "unauthorized"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		w.Header().Set("Allow", method)
+		writeJSON(w, http.StatusMethodNotAllowed, protocol.ErrorPayload{Code: "method_not_allowed"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, target interface{}) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: "invalid_json"})
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, status int, value interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	encoder := json.NewEncoder(w)
+	encoder.Encode(value)
 }
 
 type webSocketSession struct {
