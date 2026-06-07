@@ -60,6 +60,7 @@ Store-backed relay servers expose the server-side integration API:
 - `POST /v1/hosts/register`
 - `POST /v1/pairing/invites`
 - `POST /v1/pairing/claim`
+- `POST /v1/pairing/bind`
 - `POST /v1/pairing/approve`
 - `GET /v1/devices?tenantId=<tenantId>&hostId=<hostId>`
 - `POST /v1/devices/revoke`

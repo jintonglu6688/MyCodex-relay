@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/mycodex/mycodex-relay/internal/config"
 	"github.com/mycodex/mycodex-relay/internal/store"
 	"github.com/mycodex/mycodex-relay/internal/tenant"
@@ -98,9 +100,58 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 		t.Fatalf("unexpected approve body: %+v", approved)
 	}
 
+	inviteStatus, inviteBody = postJSON(t, server.URL+"/v1/pairing/invites", tenantSecret, map[string]interface{}{
+		"tenantId":   created.TenantID,
+		"hostId":     "host_a",
+		"ttlSeconds": 3600,
+	})
+	if inviteStatus != http.StatusOK {
+		t.Fatalf("unexpected second invite status=%d body=%s", inviteStatus, inviteBody)
+	}
+	var bindInvite struct {
+		InviteID            string `json:"inviteId"`
+		OneTimePairingToken string `json:"oneTimePairingToken"`
+	}
+	if err := json.Unmarshal([]byte(inviteBody), &bindInvite); err != nil {
+		t.Fatalf("unmarshal bind invite: %v", err)
+	}
+	bindStatus, bindBody := postJSON(t, server.URL+"/v1/pairing/bind", "", map[string]string{
+		"tenantId":            created.TenantID,
+		"hostId":              "host_a",
+		"inviteId":            bindInvite.InviteID,
+		"oneTimePairingToken": bindInvite.OneTimePairingToken,
+		"deviceId":            "device_b",
+		"deviceDisplayName":   "Android 2",
+		"devicePublicKey":     "device-key-2",
+		"platform":            "android",
+	})
+	if bindStatus != http.StatusOK || !strings.Contains(bindBody, `"deviceToken"`) || !strings.Contains(bindBody, `"deviceId":"device_b"`) {
+		t.Fatalf("unexpected bind response: status=%d body=%s", bindStatus, bindBody)
+	}
+	var bound struct {
+		DeviceID    string `json:"deviceId"`
+		DeviceToken string `json:"deviceToken"`
+	}
+	if err := json.Unmarshal([]byte(bindBody), &bound); err != nil {
+		t.Fatalf("unmarshal bind response: %v", err)
+	}
+
 	listStatus, listBody := getJSON(t, server.URL+"/v1/devices?tenantId="+created.TenantID+"&hostId=host_a", tenantSecret)
-	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"device_a"`) || strings.Contains(listBody, approved.DeviceToken) {
+	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"device_a"`) || !strings.Contains(listBody, `"deviceId":"device_b"`) || strings.Contains(listBody, approved.DeviceToken) {
 		t.Fatalf("unexpected device list: status=%d body=%s", listStatus, listBody)
+	}
+	if !strings.Contains(listBody, `"online":false`) {
+		t.Fatalf("expected offline device list before websocket connection, got %s", listBody)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deviceConn := dialRelayWithAuth(t, ctx, server.URL, "connection=device&tenantId="+created.TenantID+"&hostId=host_a&deviceId=device_b&sessionId=device_b_session", bound.DeviceToken)
+	defer deviceConn.Close(websocket.StatusNormalClosure, "")
+
+	listStatus, listBody = getJSON(t, server.URL+"/v1/devices?tenantId="+created.TenantID+"&hostId=host_a", tenantSecret)
+	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"device_b"`) || !strings.Contains(listBody, `"online":true`) {
+		t.Fatalf("expected online device after websocket connection: status=%d body=%s", listStatus, listBody)
 	}
 
 	revokeStatus, revokeBody := postJSON(t, server.URL+"/v1/devices/revoke", tenantSecret, map[string]string{

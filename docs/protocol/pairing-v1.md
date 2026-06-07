@@ -39,6 +39,8 @@ Pairing connects one mobile device to one Windows host under one tenant.
 8. Approval persists a device binding under `tenantId + hostId + deviceId` and returns a device token once.
 9. Approved, non-revoked devices use the device token as the WebSocket bearer credential for future sessions.
 
+For the first mobile MVP, the Windows-generated one-time pairing code is treated as user authorization. Mobile may call `/v1/pairing/bind` to consume the invite, persist the device binding, and receive `deviceToken` in one step. If a future policy requires explicit Windows-side approval, mobile should use claim/approve instead.
+
 Invite consumption is atomic. If two claim attempts race for the same invite, only one can consume it and the other receives `invite_consumed`.
 
 ## Device Binding

@@ -41,6 +41,7 @@ func NewServer(cfg config.Config) *Server {
 	server.mux.HandleFunc("/v1/hosts/register", server.handleRegisterHost)
 	server.mux.HandleFunc("/v1/pairing/invites", server.handleCreateInvite)
 	server.mux.HandleFunc("/v1/pairing/claim", server.handleClaimInvite)
+	server.mux.HandleFunc("/v1/pairing/bind", server.handleBindPairing)
 	server.mux.HandleFunc("/v1/pairing/approve", server.handleApprovePairing)
 	server.mux.HandleFunc("/v1/devices", server.handleListDevices)
 	server.mux.HandleFunc("/v1/devices/revoke", server.handleRevokeDevice)
@@ -212,6 +213,48 @@ func (s *Server) handleApprovePairing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"tenantId": request.TenantID, "hostId": request.HostID, "deviceId": request.DeviceID, "deviceToken": token})
 }
 
+func (s *Server) handleBindPairing(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request struct {
+		TenantID            string `json:"tenantId"`
+		HostID              string `json:"hostId"`
+		InviteID            string `json:"inviteId"`
+		OneTimePairingToken string `json:"oneTimePairingToken"`
+		DeviceID            string `json:"deviceId"`
+		DeviceDisplayName   string `json:"deviceDisplayName"`
+		DevicePublicKey     string `json:"devicePublicKey"`
+		Platform            string `json:"platform"`
+	}
+	if !s.readJSON(w, r, &request) {
+		return
+	}
+	service := pairing.NewService(s.store)
+	result, err := service.BindInvite(pairing.ClaimRequest{
+		TenantID:          request.TenantID,
+		HostID:            request.HostID,
+		InviteID:          request.InviteID,
+		Token:             request.OneTimePairingToken,
+		DeviceID:          request.DeviceID,
+		DeviceDisplayName: request.DeviceDisplayName,
+		DevicePublicKey:   request.DevicePublicKey,
+		Platform:          request.Platform,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"tenantId":          result.Claim.TenantID,
+		"hostId":            result.Claim.HostID,
+		"deviceId":          result.Claim.DeviceID,
+		"deviceDisplayName": result.Claim.DeviceDisplayName,
+		"platform":          result.Claim.Platform,
+		"deviceToken":       result.DeviceToken,
+	})
+}
+
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMethod(w, r, http.MethodGet) {
 		return
@@ -234,6 +277,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		DisplayName string `json:"displayName"`
 		Platform    string `json:"platform"`
 		BoundAt     string `json:"boundAt"`
+		Online      bool   `json:"online"`
 	}
 	response := make([]deviceResponse, 0, len(devices))
 	for _, device := range devices {
@@ -244,6 +288,7 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 			DisplayName: device.DisplayName,
 			Platform:    device.Platform,
 			BoundAt:     device.BoundAt.Format(time.RFC3339Nano),
+			Online:      s.isDeviceOnline(device.TenantID, device.HostID, device.DeviceID),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": response})
@@ -419,6 +464,13 @@ func (s *Server) removeSession(ws *webSocketSession) {
 			delete(s.devices, key)
 		}
 	}
+}
+
+func (s *Server) isDeviceOnline(tenantID string, hostID string, deviceID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.devices[deviceKey(tenantID, hostID, deviceID)]
+	return ok
 }
 
 func (s *Server) routeEnvelope(sender *webSocketSession, envelope protocol.Envelope) {

@@ -161,6 +161,14 @@ POST /v1/pairing/claim
 
 This endpoint is called by mobile with the invite token. It validates and consumes the invite, then returns the claimed device fields for host approval.
 
+### Bind Pairing Invite
+
+```text
+POST /v1/pairing/bind
+```
+
+This MVP endpoint is called by mobile with the invite token. It validates and consumes the invite, persists the device binding, and returns `deviceToken` once. It is used when the Windows-generated one-time pairing code is treated as authorization.
+
 ### Approve Pairing
 
 ```text
@@ -176,4 +184,4 @@ GET /v1/devices?tenantId=tenant_demo&hostId=host_demo
 POST /v1/devices/revoke
 ```
 
-Device list responses never include device tokens or token hashes. Revoke marks a device unusable for future WebSocket authentication.
+Device list responses never include device tokens or token hashes. Each listed device includes `online`, which is `true` when the relay currently has an authenticated device WebSocket session for that `tenantId + hostId + deviceId`. Revoke marks a device unusable for future WebSocket authentication.

@@ -12,6 +12,8 @@ coverage.out
 # Relay runtime state
 relay-state.db
 relay-state.db-*
+relay-state*.db
+relay-state*.db-*
 *.log
 *.pid
 
@@ -26,4 +28,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-

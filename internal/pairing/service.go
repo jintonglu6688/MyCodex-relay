@@ -38,6 +38,11 @@ type Claim struct {
 	Platform          string
 }
 
+type BindResult struct {
+	Claim       Claim
+	DeviceToken string
+}
+
 type Device struct {
 	TenantID        string
 	HostID          string
@@ -84,6 +89,10 @@ func (s *Service) CreateInvite(tenantID string, hostID string, expiresAt time.Ti
 }
 
 func (s *Service) ClaimInvite(request ClaimRequest) (Claim, error) {
+	if err := validateClaimRequestDevice(request); err != nil {
+		return Claim{}, err
+	}
+
 	row := s.store.DB().QueryRow(
 		"select token_hash, expires_at, consumed_at from pairing_invites where tenant_id = ? and host_id = ? and invite_id = ?",
 		request.TenantID, request.HostID, request.InviteID)
@@ -133,14 +142,28 @@ func (s *Service) ClaimInvite(request ClaimRequest) (Claim, error) {
 	}, nil
 }
 
+func (s *Service) BindInvite(request ClaimRequest) (BindResult, error) {
+	claim, err := s.ClaimInvite(request)
+	if err != nil {
+		return BindResult{}, err
+	}
+
+	token, err := s.ApproveClaimWithToken(claim)
+	if err != nil {
+		return BindResult{}, err
+	}
+
+	return BindResult{Claim: claim, DeviceToken: token}, nil
+}
+
 func (s *Service) ApproveClaim(claim Claim) error {
 	_, err := s.ApproveClaimWithToken(claim)
 	return err
 }
 
 func (s *Service) ApproveClaimWithToken(claim Claim) (string, error) {
-	if strings.TrimSpace(claim.TenantID) == "" || strings.TrimSpace(claim.HostID) == "" || strings.TrimSpace(claim.DeviceID) == "" {
-		return "", fmt.Errorf("tenantId, hostId, and deviceId are required")
+	if err := validateClaimDevice(claim); err != nil {
+		return "", err
 	}
 	token, err := security.GenerateToken(32)
 	if err != nil {
@@ -165,6 +188,27 @@ on conflict(tenant_id, host_id, device_id) do update set
 		return "", err
 	}
 	return token, nil
+}
+
+func validateClaimRequestDevice(request ClaimRequest) error {
+	return validateClaimDevice(Claim{
+		TenantID:          request.TenantID,
+		HostID:            request.HostID,
+		DeviceID:          request.DeviceID,
+		DeviceDisplayName: request.DeviceDisplayName,
+		DevicePublicKey:   request.DevicePublicKey,
+		Platform:          request.Platform,
+	})
+}
+
+func validateClaimDevice(claim Claim) error {
+	if strings.TrimSpace(claim.TenantID) == "" || strings.TrimSpace(claim.HostID) == "" || strings.TrimSpace(claim.DeviceID) == "" {
+		return fmt.Errorf("tenantId, hostId, and deviceId are required")
+	}
+	if strings.TrimSpace(claim.DeviceDisplayName) == "" || strings.TrimSpace(claim.DevicePublicKey) == "" || strings.TrimSpace(claim.Platform) == "" {
+		return fmt.Errorf("deviceDisplayName, devicePublicKey, and platform are required")
+	}
+	return nil
 }
 
 func (s *Service) GetDevice(tenantID string, hostID string, deviceID string) (Device, error) {
