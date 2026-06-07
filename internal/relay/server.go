@@ -331,6 +331,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(webSocketReadLimit(s.config.DefaultQuota.MaxMessageBytes))
 	ws := &webSocketSession{session: activeSession, conn: conn}
 	s.addSession(ws)
 	defer func() {
@@ -527,6 +528,13 @@ func (ws *webSocketSession) writeEnvelope(envelope protocol.Envelope) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
 	return ws.conn.Write(context.Background(), websocket.MessageText, data)
+}
+
+func webSocketReadLimit(maxPayloadBytes int) int64 {
+	if maxPayloadBytes < 0 {
+		return -1
+	}
+	return int64(maxPayloadBytes)*2 + 64*1024
 }
 
 func sessionFromRequest(r *http.Request) (session.Session, error) {
