@@ -87,6 +87,40 @@ func TestWebSocketRoutesPingPongBetweenDeviceAndHost(t *testing.T) {
 	}
 }
 
+func TestWebSocketForwardsRemoteCodingPayloadUntouched(t *testing.T) {
+	server := NewServer(config.Default())
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	defer host.Close(websocket.StatusNormalClosure, "")
+	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
+	defer device.Close(websocket.StatusNormalClosure, "")
+
+	payload := "{\"schemaVersion\":1,\"payloadType\":\"remote.command\",\"requestId\":\"request_a\",\"deviceId\":\"device_a\",\"commandType\":\"coding.workspaces.list\",\"payload\":{}}"
+	message := protocol.Envelope{
+		ProtocolVersion: 1,
+		MessageID:       "coding-request",
+		TenantID:        "tenant_a",
+		HostID:          "host_a",
+		DeviceID:        "device_a",
+		SessionID:       "device_session",
+		Direction:       protocol.DirectionMobileToWindows,
+		Kind:            "rpc.request",
+		Sequence:        1,
+		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
+		Payload:         payload,
+	}
+
+	writeEnvelope(t, ctx, device, message)
+	received := readEnvelope(t, ctx, host)
+	if received.Payload != payload {
+		t.Fatalf("payload changed during relay route: %s", received.Payload)
+	}
+}
+
 func TestWebSocketRejectsCrossTenantRoute(t *testing.T) {
 	server := NewServer(config.Default())
 	httpServer := httptest.NewServer(server.Handler())

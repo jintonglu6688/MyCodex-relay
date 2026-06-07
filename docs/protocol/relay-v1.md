@@ -34,6 +34,12 @@ Relay-visible fields are used only for authentication, routing, quota enforcemen
 - `payloadEncoding` must be `plain-json` for debug traffic or `encrypted-json` for production traffic.
 - `payload` must not exceed the configured message size limit.
 
+## Business Payload Documents
+
+The relay does not parse business payloads. MyCodex clients currently define these payload documents:
+
+- `remote-coding-v1.md`: Android programming-mode workspace, session, chat, streaming, approval, and write-lock payloads.
+
 ## WebSocket Session Handshake
 
 Relay MVP WebSocket sessions connect to `/v1/ws` with query parameters. This is the MVP handshake; future clients may negotiate a signed hello message after the socket is accepted.
