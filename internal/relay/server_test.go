@@ -126,6 +126,44 @@ func TestWebSocketRoutesLargeResponseWithinConfiguredMessageLimit(t *testing.T) 
 	}
 }
 
+func TestWebSocketRoutesRemoteHistoryResponseOverOneMegabyte(t *testing.T) {
+	cfg := config.Default()
+	server := NewServer(cfg)
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	defer host.Close(websocket.StatusNormalClosure, "")
+	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
+	defer device.Close(websocket.StatusNormalClosure, "")
+	device.SetReadLimit(2 * 1024 * 1024)
+
+	payload := `{"type":"remote.event","eventType":"coding.messages.list.result","messages":"` + strings.Repeat("x", 1250*1024) + `"}`
+	response := protocol.Envelope{
+		ProtocolVersion: 1,
+		MessageID:       "large-history-response",
+		TenantID:        "tenant_a",
+		HostID:          "host_a",
+		DeviceID:        "device_a",
+		SessionID:       "host_session",
+		Direction:       protocol.DirectionWindowsToMobile,
+		Kind:            "rpc.response",
+		Sequence:        1,
+		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
+		Payload:         payload,
+	}
+
+	writeEnvelope(t, ctx, host, response)
+	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readCancel()
+	received := readEnvelope(t, readCtx, device)
+	if received.MessageID != "large-history-response" || received.Payload != payload {
+		t.Fatalf("unexpected large history response: messageId=%s payloadBytes=%d", received.MessageID, len([]byte(received.Payload)))
+	}
+}
+
 func TestWebSocketForwardsRemoteCodingPayloadUntouched(t *testing.T) {
 	server := NewServer(config.Default())
 	httpServer := httptest.NewServer(server.Handler())

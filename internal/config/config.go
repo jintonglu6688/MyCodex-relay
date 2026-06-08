@@ -44,7 +44,7 @@ func Default() Config {
 			MaxWindowsHosts:          4,
 			MaxDevicesPerHost:        8,
 			MaxConcurrentSessions:    16,
-			MaxMessageBytes:          1048576,
+			MaxMessageBytes:          32 * 1024 * 1024,
 			MaxFileBytes:             104857600,
 			MaxFileTransfers:         2,
 			PairingInvitesPerHour:    30,
