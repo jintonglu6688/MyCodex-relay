@@ -6,19 +6,29 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+Remove-Item -Path (Join-Path $dist "mycodex-relay-*") -Force -ErrorAction SilentlyContinue
 
 $targets = @(
-    @{ GOOS = "windows"; GOARCH = "amd64"; Name = "mycodex-relay-windows-x64.exe" },
-    @{ GOOS = "linux"; GOARCH = "amd64"; Name = "mycodex-relay-linux-x64" },
-    @{ GOOS = "linux"; GOARCH = "arm64"; Name = "mycodex-relay-linux-arm64" },
-    @{ GOOS = "darwin"; GOARCH = "amd64"; Name = "mycodex-relay-macos-x64" },
-    @{ GOOS = "darwin"; GOARCH = "arm64"; Name = "mycodex-relay-macos-arm64" }
+    @{ GOOS = "windows"; GOARCH = "amd64"; Dir = "windows-x64"; Binary = "mycodex-relay.exe"; Scripts = "windows" },
+    @{ GOOS = "linux"; GOARCH = "amd64"; Dir = "linux-x64"; Binary = "mycodex-relay"; Scripts = "" },
+    @{ GOOS = "linux"; GOARCH = "arm64"; Dir = "linux-arm64"; Binary = "mycodex-relay"; Scripts = "" },
+    @{ GOOS = "darwin"; GOARCH = "amd64"; Dir = "macos-x64"; Binary = "mycodex-relay"; Scripts = "macos" },
+    @{ GOOS = "darwin"; GOARCH = "arm64"; Dir = "macos-arm64"; Binary = "mycodex-relay"; Scripts = "macos" }
 )
 
 foreach ($target in $targets) {
     $env:GOOS = $target.GOOS
     $env:GOARCH = $target.GOARCH
-    $output = Join-Path $dist $target.Name
+    $targetDir = Join-Path $dist $target.Dir
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    $output = Join-Path $targetDir $target.Binary
     go build -trimpath -ldflags "-s -w -X github.com/mycodex/mycodex-relay/internal/cli.Version=$Version" -o $output ./cmd/mycodex-relay
     Write-Host "Built $output"
+
+    if ($target.Scripts -ne "") {
+        $scriptDir = Join-Path $PSScriptRoot (Join-Path "package" $target.Scripts)
+        if (Test-Path $scriptDir) {
+            Copy-Item -Path (Join-Path $scriptDir "*") -Destination $targetDir -Force
+        }
+    }
 }

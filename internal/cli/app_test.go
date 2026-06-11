@@ -44,7 +44,7 @@ func TestRunHelpListsCoreCommands(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d; stderr=%s", exitCode, stderr.String())
 	}
-	expected := "commands: help, version, configure, serve, tenant, debug\n"
+	expected := "commands: help, version, configure, serve, info, tenant, debug\n"
 	if stdout.String() != expected {
 		t.Fatalf("expected %q, got %q", expected, stdout.String())
 	}
@@ -153,6 +153,107 @@ func TestRunTenantLifecycleDoesNotPrintStoredSecrets(t *testing.T) {
 	rotated := valueFromOutput(stdout.String(), "tenantSecret")
 	if rotated == "" || rotated == tenantSecret || strings.Count(stdout.String(), "tenantSecret=") != 1 {
 		t.Fatalf("unexpected rotate output: %q", stdout.String())
+	}
+}
+
+func TestRunInfoPrintsServerAndTenantsWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "relay-config.json")
+	statePath := filepath.Join(dir, "state.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if code := Run([]string{
+		"configure",
+		"--config", configPath,
+		"--state", statePath,
+		"--listen-host", "0.0.0.0",
+		"--listen-port", "39000",
+		"--public-host", "relay.example.com",
+		"--public-port", "443",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("configure failed: code=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"tenant", "create", "--config", configPath, "--name", "Alice"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("tenant create failed: code=%d stderr=%s", code, stderr.String())
+	}
+	createOutput := stdout.String()
+	tenantID := valueFromOutput(createOutput, "tenantId")
+	tenantSecret := valueFromOutput(createOutput, "tenantSecret")
+	if tenantID == "" || tenantSecret == "" {
+		t.Fatalf("expected tenant id and secret, got %q", createOutput)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"info", "--config", configPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("info failed: code=%d stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, expected := range []string{
+		"MyCodex Relay\n",
+		"configPath=" + configPath,
+		"statePath=" + statePath,
+		"listenHost=0.0.0.0",
+		"listenPort=39000",
+		"publicHost=relay.example.com",
+		"publicPort=443",
+		"tlsRequired=false",
+		"relayHost=relay.example.com",
+		"relayPort=443",
+		"relayUrl=http://relay.example.com:443",
+		"healthUrl=http://relay.example.com:443/health",
+		"tenants=1",
+		"tenantId=" + tenantID,
+		"displayName=Alice",
+		"enabled=true",
+		"connectionRelayHost=relay.example.com",
+		"connectionRelayPort=443",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected info output to contain %q, got %q", expected, output)
+		}
+	}
+	if strings.Contains(output, tenantSecret) || strings.Contains(output, "tenantSecret") || strings.Contains(output, "secretHash") {
+		t.Fatalf("info output should not print secrets, got %q", output)
+	}
+}
+
+func TestRunInfoEnsureTenantCreatesDefaultTenantAndPrintsSecretOnce(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "relay-config.json")
+	statePath := filepath.Join(dir, "state.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if code := Run([]string{"configure", "--config", configPath, "--state", statePath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("configure failed: code=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"info", "--config", configPath, "--ensure-tenant", "--tenant-name", "Local"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("info failed: code=%d stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	tenantID := valueFromOutput(output, "tenantId")
+	tenantSecret := valueFromOutput(output, "tenantSecret")
+	if tenantID == "" || tenantSecret == "" {
+		t.Fatalf("expected created tenant id and secret, got %q", output)
+	}
+	if !strings.Contains(output, "tenants=1") || !strings.Contains(output, "displayName=Local") || !strings.Contains(output, "tenantSecretSource=created") {
+		t.Fatalf("unexpected ensure tenant output: %q", output)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{"info", "--config", configPath, "--ensure-tenant", "--tenant-name", "Local"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second info failed: code=%d stderr=%s", code, stderr.String())
+	}
+	secondOutput := stdout.String()
+	if strings.Contains(secondOutput, "tenantSecret=") || strings.Contains(secondOutput, tenantSecret) || strings.Count(secondOutput, "tenantId=") != 1 {
+		t.Fatalf("second info should not print or create another secret, got %q", secondOutput)
 	}
 }
 

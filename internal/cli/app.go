@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,7 +33,7 @@ func RunWithContext(ctx context.Context, args []string, stdout io.Writer, stderr
 
 	switch args[0] {
 	case "help":
-		fmt.Fprintln(stdout, "commands: help, version, configure, serve, tenant, debug")
+		fmt.Fprintln(stdout, "commands: help, version, configure, serve, info, tenant, debug")
 		return 0
 	case "version":
 		fmt.Fprintf(stdout, "mycodex-relay %s\n", Version)
@@ -41,6 +42,8 @@ func RunWithContext(ctx context.Context, args []string, stdout io.Writer, stderr
 		return runConfigure(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
+	case "info":
+		return runInfo(args[1:], stdout, stderr)
 	case "tenant":
 		return runTenant(args[1:], stdout, stderr)
 	case "debug":
@@ -125,6 +128,67 @@ func runServe(ctx context.Context, args []string, stdout io.Writer, stderr io.Wr
 	if err := server.Serve(ctx); err != nil {
 		fmt.Fprintf(stderr, "serve failed: %v\n", err)
 		return 1
+	}
+	return 0
+}
+
+func runInfo(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := newFlagSet("info", stderr)
+	configPath := flags.String("config", "relay-config.json", "config path")
+	ensureTenant := flags.Bool("ensure-tenant", false, "create a default tenant when none exists")
+	tenantName := flags.String("tenant-name", "Local", "default tenant display name for --ensure-tenant")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	cfg, service, closeStore, code := openTenantService(*configPath, stderr)
+	if code != 0 {
+		return code
+	}
+	defer closeStore()
+	tenants, err := service.List()
+	if err != nil {
+		fmt.Fprintf(stderr, "list tenants: %v\n", err)
+		return 1
+	}
+	createdTenantID := ""
+	createdTenantSecret := ""
+	if *ensureTenant && len(tenants) == 0 {
+		created, secret, err := service.Create(*tenantName)
+		if err != nil {
+			fmt.Fprintf(stderr, "create tenant: %v\n", err)
+			return 1
+		}
+		createdTenantID = created.TenantID
+		createdTenantSecret = secret
+		tenants = append(tenants, created)
+	}
+	host, port := publicEndpoint(cfg)
+	relayURL := relayURL(cfg, host, port)
+	fmt.Fprintln(stdout, "MyCodex Relay")
+	fmt.Fprintf(stdout, "version=%s\n", Version)
+	fmt.Fprintf(stdout, "configPath=%s\n", *configPath)
+	fmt.Fprintf(stdout, "statePath=%s\n", cfg.StatePath)
+	fmt.Fprintf(stdout, "listenHost=%s\n", cfg.ListenHost)
+	fmt.Fprintf(stdout, "listenPort=%d\n", cfg.ListenPort)
+	fmt.Fprintf(stdout, "publicHost=%s\n", cfg.PublicHost)
+	fmt.Fprintf(stdout, "publicPort=%d\n", cfg.PublicPort)
+	fmt.Fprintf(stdout, "tlsRequired=%t\n", cfg.TLS.Enabled)
+	fmt.Fprintf(stdout, "relayHost=%s\n", host)
+	fmt.Fprintf(stdout, "relayPort=%d\n", port)
+	fmt.Fprintf(stdout, "relayUrl=%s\n", relayURL)
+	fmt.Fprintf(stdout, "healthUrl=%s/health\n", relayURL)
+	fmt.Fprintf(stdout, "tenants=%d\n", len(tenants))
+	for _, item := range tenants {
+		fmt.Fprintln(stdout)
+		fmt.Fprintf(stdout, "tenantId=%s\n", item.TenantID)
+		fmt.Fprintf(stdout, "displayName=%s\n", item.DisplayName)
+		fmt.Fprintf(stdout, "enabled=%t\n", item.Enabled)
+		fmt.Fprintf(stdout, "connectionRelayHost=%s\n", host)
+		fmt.Fprintf(stdout, "connectionRelayPort=%d\n", port)
+		if item.TenantID == createdTenantID {
+			fmt.Fprintf(stdout, "tenantSecret=%s\n", createdTenantSecret)
+			fmt.Fprintln(stdout, "tenantSecretSource=created")
+		}
 	}
 	return 0
 }
@@ -301,14 +365,7 @@ func runTenantPrintConnection(args []string, stdout io.Writer, stderr io.Writer)
 		fmt.Fprintf(stderr, "load tenant: %v\n", err)
 		return 1
 	}
-	host := cfg.PublicHost
-	if host == "" {
-		host = cfg.ListenHost
-	}
-	port := cfg.PublicPort
-	if port == 0 {
-		port = cfg.ListenPort
-	}
+	host, port := publicEndpoint(cfg)
 	fmt.Fprintf(stdout, "relayHost=%s\n", host)
 	fmt.Fprintf(stdout, "relayPort=%d\n", port)
 	fmt.Fprintf(stdout, "tlsRequired=%t\n", cfg.TLS.Enabled)
@@ -383,6 +440,25 @@ type tenantFlags struct {
 func tenantFlagSet(name string, stderr io.Writer) tenantFlags {
 	flags := newFlagSet(name, stderr)
 	return tenantFlags{FlagSet: flags, configPath: flags.String("config", "relay-config.json", "config path")}
+}
+
+func publicEndpoint(cfg config.Config) (string, int) {
+	if cfg.PublicHost == "" {
+		return cfg.ListenHost, cfg.ListenPort
+	}
+	port := cfg.PublicPort
+	if port == 0 {
+		port = cfg.ListenPort
+	}
+	return cfg.PublicHost, port
+}
+
+func relayURL(cfg config.Config, host string, port int) string {
+	scheme := "http"
+	if cfg.TLS.Enabled {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func openTenantService(configPath string, stderr io.Writer) (config.Config, *tenant.Service, func(), int) {

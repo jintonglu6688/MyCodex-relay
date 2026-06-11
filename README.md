@@ -30,6 +30,7 @@ The first milestone is a multi-tenant relay MVP with mock Windows host and mock 
 
 ```powershell
 go run ./cmd/mycodex-relay configure --config relay-config.json --state relay-state.db --public-host relay.example.com
+go run ./cmd/mycodex-relay info --config relay-config.json --ensure-tenant --tenant-name Local
 go run ./cmd/mycodex-relay tenant create --config relay-config.json --name Alice
 go run ./cmd/mycodex-relay tenant list --config relay-config.json
 go run ./cmd/mycodex-relay tenant show --config relay-config.json --tenant <tenantId>
@@ -79,8 +80,44 @@ Windows:
 scripts\build.ps1 -Version 0.1.0-dev
 ```
 
+or:
+
+```bat
+build_all.bat 0.1.0-dev
+```
+
 Linux/macOS:
 
 ```bash
 sh scripts/build.sh 0.1.0-dev
 ```
+
+Build outputs are grouped by platform:
+
+```text
+dist/
+  windows-x64/
+    mycodex-relay.exe
+    show-relay-info.bat
+    start-relay.bat
+    start-relay.vbs
+    stop-relay.bat
+  macos-x64/
+    mycodex-relay
+    show-relay-info.command
+    start-relay.command
+    stop-relay.command
+  macos-arm64/
+    mycodex-relay
+    show-relay-info.command
+    start-relay.command
+    stop-relay.command
+  linux-x64/
+    mycodex-relay
+  linux-arm64/
+    mycodex-relay
+```
+
+The Windows and macOS start scripts run `serve` from the platform directory. With no argument they prefer `relay-config.local.json` when it exists, otherwise they use `relay-config.json`. If the selected config does not exist, the script creates a default local config with `relay-state.db` as the state file before starting the relay. Logs are written to `relay.out.log` and `relay.err.log`.
+
+Use `show-relay-info.bat` on Windows or `show-relay-info.command` on macOS to display the local registration information, including listen/public ports, relay URL, health URL, and tenant IDs. If no tenant exists, the script creates a `Local` tenant and prints the newly generated tenant secret once. Existing tenant secrets are not recoverable; use `tenant rotate-secret` to explicitly generate a replacement secret.
