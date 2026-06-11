@@ -5,8 +5,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
 BIN="./mycodex-relay"
+STATE="relay-state.db"
 if [ "$#" -gt 0 ]; then
   CONFIG="$1"
+  STATE="$(basename "$CONFIG" .json).db"
 elif [ -f relay-config.local.json ]; then
   CONFIG="relay-config.local.json"
 else
@@ -15,18 +17,15 @@ fi
 
 if [ ! -f "$BIN" ]; then
   echo "mycodex-relay not found in $DIR."
-  read -r -p "Press Enter to close..."
   exit 1
 fi
 
 chmod +x "$BIN" 2>/dev/null || true
 
 if [ ! -f "$CONFIG" ]; then
-  echo "$CONFIG not found. Creating default config..."
-  "$BIN" configure --config "$CONFIG" --state relay-state.db
-  echo
+  "$BIN" local init --config "$CONFIG" --state "$STATE" --json >/dev/null
 fi
 
-"$BIN" info --config "$CONFIG" --ensure-tenant --tenant-name Local
-echo
-read -r -p "Press Enter to close..."
+nohup "$BIN" serve --config "$CONFIG" >> relay.out.log 2>> relay.err.log &
+echo $! > mycodex-relay.pid
+echo "MyCodex Relay started."

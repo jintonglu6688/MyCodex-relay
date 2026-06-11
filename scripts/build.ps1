@@ -9,11 +9,11 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Remove-Item -Path (Join-Path $dist "mycodex-relay-*") -Force -ErrorAction SilentlyContinue
 
 $targets = @(
-    @{ GOOS = "windows"; GOARCH = "amd64"; Dir = "windows-x64"; Binary = "mycodex-relay.exe"; Scripts = "windows" },
+    @{ GOOS = "windows"; GOARCH = "amd64"; Dir = "windows-x64"; Binary = "mycodex-relay.exe"; Scripts = "windows-x64" },
     @{ GOOS = "linux"; GOARCH = "amd64"; Dir = "linux-x64"; Binary = "mycodex-relay"; Scripts = "" },
     @{ GOOS = "linux"; GOARCH = "arm64"; Dir = "linux-arm64"; Binary = "mycodex-relay"; Scripts = "" },
-    @{ GOOS = "darwin"; GOARCH = "amd64"; Dir = "macos-x64"; Binary = "mycodex-relay"; Scripts = "macos" },
-    @{ GOOS = "darwin"; GOARCH = "arm64"; Dir = "macos-arm64"; Binary = "mycodex-relay"; Scripts = "macos" }
+    @{ GOOS = "darwin"; GOARCH = "amd64"; Dir = "darwin-x64"; Binary = "mycodex-relay"; Scripts = "darwin-x64" },
+    @{ GOOS = "darwin"; GOARCH = "arm64"; Dir = "darwin-arm64"; Binary = "mycodex-relay"; Scripts = "darwin-arm64" }
 )
 
 foreach ($target in $targets) {

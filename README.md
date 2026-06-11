@@ -100,14 +100,14 @@ dist/
     mycodex-relay.exe
     show-relay-info.bat
     start-relay.bat
-    start-relay.vbs
+    start-relay-silent.vbs
     stop-relay.bat
-  macos-x64/
+  darwin-x64/
     mycodex-relay
     show-relay-info.command
     start-relay.command
     stop-relay.command
-  macos-arm64/
+  darwin-arm64/
     mycodex-relay
     show-relay-info.command
     start-relay.command

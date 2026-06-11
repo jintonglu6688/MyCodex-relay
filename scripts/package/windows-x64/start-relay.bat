@@ -5,32 +5,26 @@ cd /d "%~dp0"
 
 set "BIN=mycodex-relay.exe"
 set "CONFIG=%~1"
+set "STATE=relay-state.db"
 if "%CONFIG%"=="" (
   if exist "relay-config.local.json" (
     set "CONFIG=relay-config.local.json"
   ) else (
     set "CONFIG=relay-config.json"
   )
+) else (
+  set "STATE=%~n1.db"
 )
 
 if not exist "%BIN%" (
   echo %BIN% not found in %CD%.
-  pause
   exit /b 1
 )
 
-if not exist "%CONFIG%" (
-  echo %CONFIG% not found. Creating default config...
-  "%BIN%" configure --config "%CONFIG%" --state relay-state.db
-  if errorlevel 1 (
-    pause
-    exit /b 1
-  )
-  echo.
-)
+echo Starting MyCodex Relay with %CONFIG%...
+wscript.exe //B "%~dp0start-relay-silent.vbs" "%CONFIG%" "%STATE%"
+if errorlevel 1 exit /b 1
 
-"%BIN%" info --config "%CONFIG%" --ensure-tenant --tenant-name Local
-echo.
-pause
+echo MyCodex Relay started.
 endlocal
 exit /b 0
