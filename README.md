@@ -74,6 +74,16 @@ GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows j
 
 ## Build
 
+### Windows embedded mode
+
+普通用户不需要手动运行本仓库脚本。正式产品中，Windows 端 MyCodex 会内置 Relay，并在“远程服务”页面完成启动、诊断和配对。
+
+本仓库脚本仍用于开发、自托管和问题诊断：
+
+- `start-relay.bat`: start Relay in the foreground.
+- `start-relay-silent.vbs`: start Relay without a console window.
+- `show-relay-info.bat`: display the local Relay URL, health URL, and tenant ID.
+
 Windows:
 
 ```powershell
