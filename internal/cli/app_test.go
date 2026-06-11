@@ -44,7 +44,7 @@ func TestRunHelpListsCoreCommands(t *testing.T) {
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d; stderr=%s", exitCode, stderr.String())
 	}
-	expected := "commands: help, version, configure, serve, info, tenant, debug\n"
+	expected := "commands: help, version, configure, serve, info, local, tenant, debug\n"
 	if stdout.String() != expected {
 		t.Fatalf("expected %q, got %q", expected, stdout.String())
 	}
