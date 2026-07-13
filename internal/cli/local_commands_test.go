@@ -75,6 +75,87 @@ func TestRunLocalInitWritesConfigAndPrintsJson(t *testing.T) {
 	}
 }
 
+func TestRunLocalInitEmbeddedTLSCreatesAndReportsStableCertificate(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "relay-config.json")
+	statePath := filepath.Join(dir, "state.db")
+	args := []string{
+		"local", "init",
+		"--config", configPath,
+		"--state", statePath,
+		"--listen-host", "0.0.0.0",
+		"--listen-port", "38443",
+		"--public-host", "192.0.2.42",
+		"--public-port", "38443",
+		"--embedded-tls",
+		"--json",
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("first embedded TLS init failed: code=%d stderr=%s", code, stderr.String())
+	}
+	first := decodeLocalInfoOutput(t, stdout.String())
+	if !first.TLSRequired || first.RelayURL != "https://192.0.2.42:38443" {
+		t.Fatalf("unexpected embedded TLS output: %+v", first)
+	}
+	if !filepath.IsAbs(first.CertificatePath) || len(first.CertificateSHA256) != 64 {
+		t.Fatalf("expected absolute certificate identity, got %+v", first)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load embedded TLS config: %v", err)
+	}
+	if !loaded.TLS.Enabled || loaded.TLS.CertFile != first.CertificatePath || loaded.TLS.KeyFile == "" {
+		t.Fatalf("unexpected TLS config: %+v", loaded.TLS)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("second embedded TLS init failed: code=%d stderr=%s", code, stderr.String())
+	}
+	second := decodeLocalInfoOutput(t, stdout.String())
+	if second.CertificatePath != first.CertificatePath || second.CertificateSHA256 != first.CertificateSHA256 {
+		t.Fatalf("embedded identity changed: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestRunLocalInfoAndEnsureTenantReportCertificateWithoutPrivateKey(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "relay-config.json")
+	statePath := filepath.Join(dir, "state.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := Run([]string{
+		"local", "init", "--config", configPath, "--state", statePath,
+		"--public-host", "192.0.2.42", "--embedded-tls", "--json",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("embedded TLS init failed: code=%d stderr=%s", code, stderr.String())
+	}
+	identity := decodeLocalInfoOutput(t, stdout.String())
+	keyPath := filepath.Join(filepath.Dir(identity.CertificatePath), "embedded-relay-key.pem")
+
+	for _, command := range [][]string{
+		{"local", "info", "--config", configPath, "--json"},
+		{"local", "ensure-tenant", "--config", configPath, "--json"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := Run(command, &stdout, &stderr); code != 0 {
+			t.Fatalf("%v failed: code=%d stderr=%s", command, code, stderr.String())
+		}
+		output := decodeLocalInfoOutput(t, stdout.String())
+		if output.CertificatePath != identity.CertificatePath || output.CertificateSHA256 != identity.CertificateSHA256 {
+			t.Fatalf("%v reported a different identity: %+v", command, output)
+		}
+		if strings.Contains(stdout.String(), keyPath) || strings.Contains(stdout.String(), "PRIVATE KEY") {
+			t.Fatalf("%v leaked private-key data: %s", command, stdout.String())
+		}
+	}
+}
+
 func TestRunLocalEnsureTenantCreatesOnceAndDoesNotRevealStoredSecret(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "relay-config.json")

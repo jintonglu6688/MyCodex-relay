@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/mycodex/mycodex-relay/internal/config"
+	"github.com/mycodex/mycodex-relay/internal/security"
 	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
@@ -36,6 +38,7 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 	listenPort := flags.String("listen-port", "", "listen port")
 	publicHost := flags.String("public-host", "", "public host")
 	publicPort := flags.String("public-port", "", "public port")
+	embeddedTLS := flags.Bool("embedded-tls", false, "create or reuse the embedded TLS identity")
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -71,6 +74,22 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		cfg.PublicPort = port
 	}
+	if *embeddedTLS {
+		absoluteConfigPath, err := filepath.Abs(*configPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "resolve config path: %v\n", err)
+			return 1
+		}
+		*configPath = absoluteConfigPath
+		identityDir := filepath.Dir(absoluteConfigPath)
+		certPath := filepath.Join(identityDir, "embedded-relay-cert.pem")
+		keyPath := filepath.Join(identityDir, "embedded-relay-key.pem")
+		if _, err := security.EnsureEmbeddedCertificate(certPath, keyPath, cfg.PublicHost); err != nil {
+			fmt.Fprintf(stderr, "initialize embedded TLS: %v\n", err)
+			return 1
+		}
+		cfg.TLS = config.TLSConfig{Enabled: true, CertFile: certPath, KeyFile: keyPath}
+	}
 	if err := ensureParentDir(*configPath); err != nil {
 		fmt.Fprintf(stderr, "create config directory: %v\n", err)
 		return 1
@@ -84,7 +103,12 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	return writeLocalInfoJSON(stdout, localInfoFromConfig(*configPath, cfg, nil, nil))
+	output, err := localInfoFromConfig(*configPath, cfg, nil, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "read local info: %v\n", err)
+		return 1
+	}
+	return writeLocalInfoJSON(stdout, output)
 }
 
 func runLocalInfo(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -109,7 +133,12 @@ func runLocalInfo(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "list tenants: %v\n", err)
 		return 1
 	}
-	return writeLocalInfoJSON(stdout, localInfoFromConfig(*configPath, cfg, tenants, nil))
+	output, err := localInfoFromConfig(*configPath, cfg, tenants, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "read local info: %v\n", err)
+		return 1
+	}
+	return writeLocalInfoJSON(stdout, output)
 }
 
 func runLocalEnsureTenant(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -130,6 +159,10 @@ func runLocalEnsureTenant(args []string, stdout io.Writer, stderr io.Writer) int
 		return code
 	}
 	defer closeStore()
+	if _, err := localInfoFromConfig(*configPath, cfg, nil, nil); err != nil {
+		fmt.Fprintf(stderr, "read local info: %v\n", err)
+		return 1
+	}
 	tenants, err := service.List()
 	if err != nil {
 		fmt.Fprintf(stderr, "list tenants: %v\n", err)
@@ -149,10 +182,15 @@ func runLocalEnsureTenant(args []string, stdout io.Writer, stderr io.Writer) int
 			Source:   "created",
 		}
 	}
-	return writeLocalInfoJSON(stdout, localInfoFromConfig(*configPath, cfg, tenants, secret))
+	output, err := localInfoFromConfig(*configPath, cfg, tenants, secret)
+	if err != nil {
+		fmt.Fprintf(stderr, "read local info: %v\n", err)
+		return 1
+	}
+	return writeLocalInfoJSON(stdout, output)
 }
 
-func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.Tenant, secret *localSecretOutput) localInfoOutput {
+func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.Tenant, secret *localSecretOutput) (localInfoOutput, error) {
 	host, port := publicEndpoint(cfg)
 	output := localInfoOutput{
 		Version:     Version,
@@ -169,6 +207,14 @@ func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.
 		Tenants:     make([]localTenantOutput, 0, len(tenants)),
 		Secret:      secret,
 	}
+	if cfg.TLS.Enabled {
+		fingerprint, err := security.ValidateTLSCertificatePair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if err != nil {
+			return localInfoOutput{}, err
+		}
+		output.CertificatePath = cfg.TLS.CertFile
+		output.CertificateSHA256 = fingerprint
+	}
 	output.HealthURL = output.RelayURL + "/health"
 	for _, item := range tenants {
 		output.Tenants = append(output.Tenants, localTenantOutput{
@@ -177,7 +223,7 @@ func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.
 			Enabled:     item.Enabled,
 		})
 	}
-	return output
+	return output, nil
 }
 
 func writeLocalInfoJSON(stdout io.Writer, output localInfoOutput) int {

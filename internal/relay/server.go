@@ -2,10 +2,12 @@ package relay
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -59,13 +61,43 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	address := net.JoinHostPort(s.config.ListenHost, fmt.Sprintf("%d", s.config.ListenPort))
-	httpServer := &http.Server{Addr: address, Handler: s.Handler()}
+	tlsConfig, err := s.buildTLSConfig()
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(s.config.ListenHost, strconv.Itoa(s.config.ListenPort)))
+	if err != nil {
+		return err
+	}
+	return s.serve(ctx, listener, tlsConfig)
+}
+
+func (s *Server) buildTLSConfig() (*tls.Config, error) {
+	if !s.config.TLS.Enabled {
+		return nil, nil
+	}
+	certificate, err := tls.LoadX509KeyPair(s.config.TLS.CertFile, s.config.TLS.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
+func (s *Server) serve(ctx context.Context, listener net.Listener, tlsConfig *tls.Config) error {
+	httpServer := &http.Server{Handler: s.Handler(), TLSConfig: tlsConfig}
 	go func() {
 		<-ctx.Done()
-		httpServer.Shutdown(context.Background())
+		_ = httpServer.Shutdown(context.Background())
 	}()
-	err := httpServer.ListenAndServe()
+	var err error
+	if tlsConfig != nil {
+		err = httpServer.ServeTLS(listener, "", "")
+	} else {
+		err = httpServer.Serve(listener)
+	}
 	if err == http.ErrServerClosed {
 		return nil
 	}

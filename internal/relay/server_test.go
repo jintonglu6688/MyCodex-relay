@@ -2,10 +2,15 @@ package relay
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +19,7 @@ import (
 	"github.com/mycodex/mycodex-relay/internal/config"
 	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
+	"github.com/mycodex/mycodex-relay/internal/security"
 	"github.com/mycodex/mycodex-relay/internal/store"
 	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
@@ -31,6 +37,96 @@ func TestHealthEndpoint(t *testing.T) {
 	if recorder.Body.String() != "{\"status\":\"ok\"}\n" {
 		t.Fatalf("unexpected body: %q", recorder.Body.String())
 	}
+}
+
+func TestServeUsesTLSForHealthEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "embedded-relay-cert.pem")
+	keyPath := filepath.Join(dir, "embedded-relay-key.pem")
+	if _, err := security.EnsureEmbeddedCertificate(certPath, keyPath, "192.0.2.42"); err != nil {
+		t.Fatalf("create embedded TLS identity: %v", err)
+	}
+	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load embedded TLS identity: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewServer(config.Default())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.serve(ctx, listener, &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS12,
+		})
+	}()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("serve returned error: %v", err)
+		}
+	}()
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read embedded certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("append embedded certificate to test roots")
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs:    roots,
+		MinVersion: tls.VersionTLS12,
+	}}}
+	response, err := client.Get("https://" + listener.Addr().String() + "/health")
+	if err != nil {
+		t.Fatalf("GET TLS health endpoint: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+}
+
+func TestServeRejectsInvalidTLSCertificateBeforeBinding(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	host, rawPort, err := net.SplitHostPort(reserved.Addr().String())
+	if err != nil {
+		t.Fatalf("split address: %v", err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatalf("parse port: %v", err)
+	}
+	if err := reserved.Close(); err != nil {
+		t.Fatalf("release port: %v", err)
+	}
+	cfg := config.Default()
+	cfg.ListenHost = host
+	cfg.ListenPort = port
+	cfg.TLS = config.TLSConfig{
+		Enabled:  true,
+		CertFile: filepath.Join(t.TempDir(), "missing-cert.pem"),
+		KeyFile:  filepath.Join(t.TempDir(), "missing-key.pem"),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := NewServer(cfg).Serve(ctx); err == nil || !strings.Contains(err.Error(), "TLS certificate") {
+		t.Fatalf("expected TLS certificate error, got %v", err)
+	}
+	available, err := net.Listen("tcp", net.JoinHostPort(host, rawPort))
+	if err != nil {
+		t.Fatalf("port was bound before TLS validation: %v", err)
+	}
+	available.Close()
 }
 
 func TestWebSocketRoutesPingPongBetweenDeviceAndHost(t *testing.T) {
