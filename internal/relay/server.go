@@ -68,6 +68,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := config.ValidateInternalListener(s.config); err != nil {
 		return err
 	}
+	if s.config.InternalListenHost != "" && !s.config.TLS.Enabled {
+		return fmt.Errorf("internal listener requires public TLS")
+	}
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(s.config.ListenHost, strconv.Itoa(s.config.ListenPort)))
 	if err != nil {
 		return fmt.Errorf("public listener: %w", err)

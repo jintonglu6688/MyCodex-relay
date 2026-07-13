@@ -101,6 +101,24 @@ func TestServeRejectsInternalPortCollisionBeforeBinding(t *testing.T) {
 	assertEndpointAvailable(t, publicHost, publicPort)
 }
 
+func TestServeRejectsInternalListenerWithoutPublicTLSBeforeBinding(t *testing.T) {
+	publicHost, publicPort := reserveEndpoint(t)
+	_, internalPort := reserveEndpoint(t)
+	cfg := config.Default()
+	cfg.ListenHost = publicHost
+	cfg.ListenPort = publicPort
+	cfg.InternalListenHost = "127.0.0.1"
+	cfg.InternalListenPort = internalPort
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := NewServer(cfg).Serve(ctx)
+	if err == nil || !strings.Contains(err.Error(), "requires public TLS") {
+		t.Fatalf("expected public TLS requirement, got %v", err)
+	}
+	assertEndpointAvailable(t, publicHost, publicPort)
+}
+
 func TestServeClosesPublicListenerWhenInternalBindFails(t *testing.T) {
 	publicHost, publicPort := reserveEndpoint(t)
 	internalListener, err := net.Listen("tcp", "127.0.0.1:0")
