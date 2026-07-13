@@ -87,6 +87,8 @@ func TestRunLocalInitEmbeddedTLSCreatesAndReportsStableCertificate(t *testing.T)
 		"--listen-port", "38443",
 		"--public-host", "192.0.2.42",
 		"--public-port", "38443",
+		"--internal-listen-host", "127.0.0.1",
+		"--internal-listen-port", "39221",
 		"--embedded-tls",
 		"--json",
 	}
@@ -100,6 +102,13 @@ func TestRunLocalInitEmbeddedTLSCreatesAndReportsStableCertificate(t *testing.T)
 	if !first.TLSRequired || first.RelayURL != "https://192.0.2.42:38443" {
 		t.Fatalf("unexpected embedded TLS output: %+v", first)
 	}
+	if first.InternalListenHost != "127.0.0.1" ||
+		first.InternalListenPort != 39221 ||
+		first.InternalTLSRequired ||
+		first.InternalRelayURL != "http://127.0.0.1:39221" ||
+		first.InternalHealthURL != "http://127.0.0.1:39221/health" {
+		t.Fatalf("unexpected embedded internal endpoint: %+v", first)
+	}
 	if !filepath.IsAbs(first.CertificatePath) || len(first.CertificateSHA256) != 64 {
 		t.Fatalf("expected absolute certificate identity, got %+v", first)
 	}
@@ -110,6 +119,9 @@ func TestRunLocalInitEmbeddedTLSCreatesAndReportsStableCertificate(t *testing.T)
 	if !loaded.TLS.Enabled || loaded.TLS.CertFile != first.CertificatePath || loaded.TLS.KeyFile == "" {
 		t.Fatalf("unexpected TLS config: %+v", loaded.TLS)
 	}
+	if loaded.InternalListenHost != "127.0.0.1" || loaded.InternalListenPort != 39221 {
+		t.Fatalf("unexpected internal listener config: %+v", loaded)
+	}
 
 	stdout.Reset()
 	stderr.Reset()
@@ -119,6 +131,39 @@ func TestRunLocalInitEmbeddedTLSCreatesAndReportsStableCertificate(t *testing.T)
 	second := decodeLocalInfoOutput(t, stdout.String())
 	if second.CertificatePath != first.CertificatePath || second.CertificateSHA256 != first.CertificateSHA256 {
 		t.Fatalf("embedded identity changed: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestRunLocalInitRejectsNonLoopbackInternalListener(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Run([]string{
+		"local", "init",
+		"--config", filepath.Join(t.TempDir(), "relay-config.json"),
+		"--internal-listen-host", "0.0.0.0",
+		"--internal-listen-port", "39221",
+		"--embedded-tls",
+		"--json",
+	}, &stdout, &stderr)
+
+	if code != 2 || !strings.Contains(stderr.String(), "loopback") {
+		t.Fatalf("expected loopback validation error, code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunLocalInitRejectsIncompleteInternalListener(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Run([]string{
+		"local", "init",
+		"--config", filepath.Join(t.TempDir(), "relay-config.json"),
+		"--internal-listen-host", "127.0.0.1",
+		"--embedded-tls",
+		"--json",
+	}, &stdout, &stderr)
+
+	if code != 2 || !strings.Contains(stderr.String(), "internal listener") {
+		t.Fatalf("expected complete internal listener error, code=%d stderr=%q", code, stderr.String())
 	}
 }
 

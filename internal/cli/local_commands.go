@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
+	"strconv"
 
 	"github.com/mycodex/mycodex-relay/internal/config"
 	"github.com/mycodex/mycodex-relay/internal/security"
@@ -36,6 +38,8 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 	statePath := flags.String("state", "", "state path")
 	listenHost := flags.String("listen-host", "", "listen host")
 	listenPort := flags.String("listen-port", "", "listen port")
+	internalListenHost := flags.String("internal-listen-host", "", "loopback-only internal listen host")
+	internalListenPort := flags.String("internal-listen-port", "", "loopback-only internal listen port")
 	publicHost := flags.String("public-host", "", "public host")
 	publicPort := flags.String("public-port", "", "public port")
 	embeddedTLS := flags.Bool("embedded-tls", false, "create or reuse the embedded TLS identity")
@@ -62,6 +66,25 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 2
 		}
 		cfg.ListenPort = port
+	}
+	if *internalListenHost != "" {
+		cfg.InternalListenHost = *internalListenHost
+	}
+	if *internalListenPort != "" {
+		port, err := parsePort(*internalListenPort)
+		if err != nil {
+			fmt.Fprintf(stderr, "invalid internal listen port: %v\n", err)
+			return 2
+		}
+		cfg.InternalListenPort = port
+	}
+	if err := config.ValidateInternalListener(cfg); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	if (cfg.InternalListenHost != "" || cfg.InternalListenPort != 0) && !*embeddedTLS {
+		fmt.Fprintln(stderr, "internal listener requires --embedded-tls")
+		return 2
 	}
 	if *publicHost != "" {
 		cfg.PublicHost = *publicHost
@@ -216,6 +239,13 @@ func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.
 		output.CertificateSHA256 = fingerprint
 	}
 	output.HealthURL = output.RelayURL + "/health"
+	if cfg.InternalListenHost != "" && cfg.InternalListenPort > 0 {
+		output.InternalListenHost = cfg.InternalListenHost
+		output.InternalListenPort = cfg.InternalListenPort
+		output.InternalTLSRequired = false
+		output.InternalRelayURL = "http://" + net.JoinHostPort(cfg.InternalListenHost, strconv.Itoa(cfg.InternalListenPort))
+		output.InternalHealthURL = output.InternalRelayURL + "/health"
+	}
 	for _, item := range tenants {
 		output.Tenants = append(output.Tenants, localTenantOutput{
 			TenantID:    item.TenantID,

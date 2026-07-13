@@ -65,11 +65,46 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(s.config.ListenHost, strconv.Itoa(s.config.ListenPort)))
-	if err != nil {
+	if err := config.ValidateInternalListener(s.config); err != nil {
 		return err
 	}
-	return s.serve(ctx, listener, tlsConfig)
+	publicListener, err := net.Listen("tcp", net.JoinHostPort(s.config.ListenHost, strconv.Itoa(s.config.ListenPort)))
+	if err != nil {
+		return fmt.Errorf("public listener: %w", err)
+	}
+	if s.config.InternalListenHost == "" || s.config.InternalListenPort == 0 {
+		return s.serve(ctx, publicListener, tlsConfig)
+	}
+
+	internalListener, err := net.Listen(
+		"tcp",
+		net.JoinHostPort(s.config.InternalListenHost, strconv.Itoa(s.config.InternalListenPort)))
+	if err != nil {
+		_ = publicListener.Close()
+		return fmt.Errorf("internal listener: %w", err)
+	}
+	return s.serveBoth(ctx, publicListener, internalListener, tlsConfig)
+}
+
+func (s *Server) serveBoth(
+	ctx context.Context,
+	publicListener net.Listener,
+	internalListener net.Listener,
+	tlsConfig *tls.Config,
+) error {
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() { results <- s.serve(serveCtx, publicListener, tlsConfig) }()
+	go func() { results <- s.serve(serveCtx, internalListener, nil) }()
+
+	first := <-results
+	cancel()
+	second := <-results
+	if first != nil {
+		return first
+	}
+	return second
 }
 
 func (s *Server) buildTLSConfig() (*tls.Config, error) {

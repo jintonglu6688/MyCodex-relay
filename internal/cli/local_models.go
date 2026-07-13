@@ -1,22 +1,27 @@
 package cli
 
 type localInfoOutput struct {
-	Version           string              `json:"version"`
-	ConfigPath        string              `json:"configPath"`
-	StatePath         string              `json:"statePath"`
-	ListenHost        string              `json:"listenHost"`
-	ListenPort        int                 `json:"listenPort"`
-	PublicHost        string              `json:"publicHost"`
-	PublicPort        int                 `json:"publicPort"`
-	TLSRequired       bool                `json:"tlsRequired"`
-	CertificatePath   string              `json:"certificatePath,omitempty"`
-	CertificateSHA256 string              `json:"certificateSha256,omitempty"`
-	RelayHost         string              `json:"relayHost"`
-	RelayPort         int                 `json:"relayPort"`
-	RelayURL          string              `json:"relayUrl"`
-	HealthURL         string              `json:"healthUrl"`
-	Tenants           []localTenantOutput `json:"tenants"`
-	Secret            *localSecretOutput  `json:"secret,omitempty"`
+	Version             string              `json:"version"`
+	ConfigPath          string              `json:"configPath"`
+	StatePath           string              `json:"statePath"`
+	ListenHost          string              `json:"listenHost"`
+	ListenPort          int                 `json:"listenPort"`
+	InternalListenHost  string              `json:"internalListenHost"`
+	InternalListenPort  int                 `json:"internalListenPort"`
+	InternalTLSRequired bool                `json:"internalTlsRequired"`
+	InternalRelayURL    string              `json:"internalRelayUrl"`
+	InternalHealthURL   string              `json:"internalHealthUrl"`
+	PublicHost          string              `json:"publicHost"`
+	PublicPort          int                 `json:"publicPort"`
+	TLSRequired         bool                `json:"tlsRequired"`
+	CertificatePath     string              `json:"certificatePath,omitempty"`
+	CertificateSHA256   string              `json:"certificateSha256,omitempty"`
+	RelayHost           string              `json:"relayHost"`
+	RelayPort           int                 `json:"relayPort"`
+	RelayURL            string              `json:"relayUrl"`
+	HealthURL           string              `json:"healthUrl"`
+	Tenants             []localTenantOutput `json:"tenants"`
+	Secret              *localSecretOutput  `json:"secret,omitempty"`
 }
 
 type localTenantOutput struct {

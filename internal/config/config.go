@@ -2,7 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
+	"strings"
 )
 
 type TLSConfig struct {
@@ -25,13 +28,35 @@ type Quota struct {
 }
 
 type Config struct {
-	ListenHost   string    `json:"listenHost"`
-	ListenPort   int       `json:"listenPort"`
-	PublicHost   string    `json:"publicHost"`
-	PublicPort   int       `json:"publicPort"`
-	StatePath    string    `json:"statePath"`
-	TLS          TLSConfig `json:"tls"`
-	DefaultQuota Quota     `json:"defaultQuota"`
+	ListenHost         string    `json:"listenHost"`
+	ListenPort         int       `json:"listenPort"`
+	InternalListenHost string    `json:"internalListenHost,omitempty"`
+	InternalListenPort int       `json:"internalListenPort,omitempty"`
+	PublicHost         string    `json:"publicHost"`
+	PublicPort         int       `json:"publicPort"`
+	StatePath          string    `json:"statePath"`
+	TLS                TLSConfig `json:"tls"`
+	DefaultQuota       Quota     `json:"defaultQuota"`
+}
+
+func ValidateInternalListener(cfg Config) error {
+	host := strings.TrimSpace(cfg.InternalListenHost)
+	if host == "" && cfg.InternalListenPort == 0 {
+		return nil
+	}
+	if host == "" || cfg.InternalListenPort <= 0 || cfg.InternalListenPort > 65535 {
+		return fmt.Errorf("internal listener requires a host and a valid nonzero port")
+	}
+	if !strings.EqualFold(host, "localhost") {
+		address := net.ParseIP(host)
+		if address == nil || !address.IsLoopback() {
+			return fmt.Errorf("internal listener host must be loopback")
+		}
+	}
+	if cfg.InternalListenPort == cfg.ListenPort {
+		return fmt.Errorf("internal listener port must be distinct from the public listener port")
+	}
+	return nil
 }
 
 func Default() Config {
