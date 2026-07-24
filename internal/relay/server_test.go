@@ -25,7 +25,7 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestWebSocketForwardsValidatedRawUTF8Unchanged(t *testing.T) {
+func TestWebSocketForwardsValidatedRawUTF8UnchangedInBothDirections(t *testing.T) {
 	server := httptest.NewServer(NewServer(config.Default()).Handler())
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -44,6 +44,17 @@ func TestWebSocketForwardsValidatedRawUTF8Unchanged(t *testing.T) {
 	}
 	if typeID != websocket.MessageText || string(got) != string(raw) {
 		t.Fatalf("relay changed raw frame: %s", got)
+	}
+	response := secureEnvelope("tenant", "host", "device", "windows_to_mobile", "rpc.response", "opaque-response")
+	if err := host.Write(ctx, websocket.MessageText, response); err != nil {
+		t.Fatal(err)
+	}
+	typeID, got, err = device.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typeID != websocket.MessageText || string(got) != string(response) {
+		t.Fatalf("relay changed reverse raw frame: %s", got)
 	}
 }
 

@@ -43,11 +43,10 @@ type Server struct {
 	mu                sync.RWMutex
 	hosts             map[string]*webSocketSession
 	devices           map[string]*webSocketSession
-	generations       map[string]uint64
 }
 
 func NewServer(cfg config.Config) *Server {
-	s := &Server{config: cfg, mux: http.NewServeMux(), hosts: map[string]*webSocketSession{}, devices: map[string]*webSocketSession{}, generations: map[string]uint64{}, challengeAttempts: map[string]challengeAttempt{}}
+	s := &Server{config: cfg, mux: http.NewServeMux(), hosts: map[string]*webSocketSession{}, devices: map[string]*webSocketSession{}, challengeAttempts: map[string]challengeAttempt{}}
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/.well-known/mycodex-relay", s.handleMetadata)
 	s.mux.HandleFunc("/v1/ws", s.handleWebSocket)
@@ -250,10 +249,9 @@ func writeJSON(w http.ResponseWriter, status int, value interface{}) {
 }
 
 type webSocketSession struct {
-	session    session.Session
-	conn       *websocket.Conn
-	generation uint64
-	writeMu    sync.Mutex
+	session session.Session
+	conn    *websocket.Conn
+	writeMu sync.Mutex
 }
 
 func (s *Server) addSession(ws *webSocketSession) bool {
@@ -264,8 +262,6 @@ func (s *Server) addSession(ws *webSocketSession) bool {
 		s.mu.Unlock()
 		return false
 	}
-	s.generations[key]++
-	ws.generation = s.generations[key]
 	switch ws.session.ConnectionType {
 	case session.ConnectionHost:
 		if old := s.hosts[key]; old != nil {
@@ -344,7 +340,6 @@ func (s *Server) revokeDevice(tenantID, hostID, deviceID string) error {
 		delete(s.devices, key)
 		closeList = append(closeList, device)
 	}
-	s.generations[key]++
 	s.mu.Unlock()
 	closeSessions(closeList, closeIdentity, "identity_or_direction_mismatch")
 	return nil
@@ -356,7 +351,7 @@ func (s *Server) routeFrame(sender *webSocketSession, frame protocol.RelayFrame,
 	if sender.session.ConnectionType == session.ConnectionDevice {
 		current = s.devices[key]
 	}
-	if current != sender || sender.generation != s.generations[key] {
+	if current != sender {
 		s.mu.RUnlock()
 		closeSocket(sender.conn, closeReplaced, "peer_replaced")
 		return false
