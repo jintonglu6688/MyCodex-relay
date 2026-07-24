@@ -43,6 +43,103 @@ are lowercase canonical ASCII strings encoded with `S`.
 `AppendField`, `AppendString`, and `AppendInt64` in
 `internal/protocol/canonical.go` are the Relay reference primitives.
 
+## Locked wire DTOs and strings
+
+JSON uses these exact record and camelCase field names:
+
+```text
+RelayMetadata
+  protocolVersion, signingPublicKey, signingKeyFingerprint, serverTime,
+  maxRequestBytes, maxMessageBytes
+
+PairingPackage
+  version, relay, tenantId, hostId, hostName, inviteId, inviteSecret,
+  expiresAt, hostSigningPublicKey, hostAgreementPublicKey,
+  hostKeyVersion, hostSignature
+
+PairingClaimHeader
+  inviteId, tenantId, hostId, claimId, deviceId,
+  deviceAgreementPublicKey, deviceKeyVersion, clientNonce,
+  ciphertextLength
+
+PairingClaimSubmission
+  header, nonce, ciphertext
+
+PairingClaimCreated
+  claimId, claimAccessToken, status, expiresAt
+
+PairingClaimStatus
+  claimId, status, updatedAt, approvalHeader, approvalNonce,
+  approvalCiphertext
+
+PairingApprovalRequest
+  deviceSigningPublicKey, deviceAgreementPublicKey, deviceKeyVersion,
+  bindingVersion, approvalHeader, approvalNonce, approvalCiphertext
+
+AuthChallengeRequest
+  subjectType, subjectId, tenantId, hostId, deviceId, purpose
+
+AuthChallenge
+  protocolVersion, relayFingerprint, challengeId, challenge,
+  subjectType, subjectId, tenantId, hostId, deviceId, purpose,
+  issuedAt, expiresAt, relaySignature
+
+AuthProof
+  challenge, subjectSignature
+
+AuthTicket
+  ticket, purpose, expiresAt
+
+SessionHello
+  protocolVersion, tenantId, hostId, deviceId, bindingVersion,
+  keyVersion, ephemeralPublicKey, nonce, createdAt, signature
+
+SecureEnvelope
+  protocolVersion, sessionId, tenantId, hostId, deviceId,
+  direction, kind, messageId, sequence, createdAt,
+  payloadEncoding, nonce, ciphertext
+```
+
+Locked string values are:
+
+```text
+subjectType:
+  host
+  device
+
+purpose:
+  pairing_invite_create
+  pairing_invite_cancel
+  pairing_claim_list
+  pairing_claim_approve
+  pairing_claim_reject
+  device_list
+  device_revoke
+  websocket_host
+  websocket_device
+
+claim status:
+  pending
+  approved
+  rejected
+  expired
+  cancelled
+  consumed
+
+direction:
+  windows_to_mobile
+  mobile_to_windows
+
+handshake kind:
+  session.client_hello
+  session.server_hello
+  session.client_confirm
+  session.server_confirm
+
+payloadEncoding:
+  encrypted-json
+```
+
 ## Transcript layouts
 
 Fields are appended in the exact order shown.
@@ -174,13 +271,19 @@ Challenge domain: `MYCODEX-RELAY-CHALLENGE-V1`
 5. `B(challengeValue)`
 6. `S(subjectType)`
 7. `S(subjectId)`
-8. `S(targetType)`
-9. `S(targetId)`
-10. `S(purpose)`
-11. `I64(issuedAt)`
-12. `I64(expiresAt)`
+8. `S(tenantId)`
+9. `S(hostId)`
+10. `S(deviceId)`
+11. `S(purpose)`
+12. `I64(issuedAt)`
+13. `I64(expiresAt)`
 
 `relaySignature` is the Relay ECDSA signature of the challenge transcript.
+The six scope fields are exactly `subjectType`, `subjectId`, `tenantId`,
+`hostId`, `deviceId`, and `purpose`, matching `AuthChallengeRequest`,
+`AuthChallenge`, and `TicketScope`. Version 1 has no `targetType` or
+`targetId`. Purpose uses a locked value such as `websocket_device`, never the
+generic string `websocket`.
 
 Proof domain: `MYCODEX-RELAY-PROOF-V1`
 
@@ -205,28 +308,43 @@ The client Hello transcript is:
 3. `S(tenantId)`
 4. `S(hostId)`
 5. `S(deviceId)`
-6. `S(bindingId)`
-7. `I64(bindingVersion)`
-8. `I64(deviceKeyVersion)`
-9. `B(clientEphemeralPublicKey)`
-10. `B(clientNonce)`
-11. `I64(clientCreatedAt)`
+6. `I64(bindingVersion)`
+7. `I64(keyVersion)`
+8. `B(ephemeralPublicKey)`
+9. `B(nonce)`
+10. `I64(createdAt)`
 
-The device signs this transcript. The server Hello transcript is then:
+The device signs this transcript. The unsigned server Hello repeats the same
+locked `SessionHello` field layout with the host key version, server ephemeral
+public key, server nonce and server creation time:
+
+1. `S(domain)`
+2. `I64(protocolVersion)`
+3. `S(tenantId)`
+4. `S(hostId)`
+5. `S(deviceId)`
+6. `I64(bindingVersion)`
+7. `I64(keyVersion)`
+8. `B(ephemeralPublicKey)`
+9. `B(nonce)`
+10. `I64(createdAt)`
+
+The host signature transcript is:
 
 ```text
 clientHelloTranscript
 || B(clientSignature)
-|| I64(hostKeyVersion)
-|| B(serverEphemeralPublicKey)
-|| B(serverNonce)
-|| I64(serverCreatedAt)
+|| serverHelloUnsignedTranscript
 ```
 
-The host signs the server Hello transcript. The complete session transcript is:
+The complete session transcript is:
 
 ```text
-sessionComplete = serverHelloTranscript || B(serverSignature)
+sessionComplete =
+    clientHelloTranscript
+    || B(clientSignature)
+    || serverHelloUnsignedTranscript
+    || B(serverSignature)
 ```
 
 ### Session confirmation
@@ -250,14 +368,18 @@ Domain: `MYCODEX-ENVELOPE-AAD-V1`
 4. `S(tenantId)`
 5. `S(hostId)`
 6. `S(deviceId)`
-7. `S(senderRole)`
-8. `S(messageType)`
+7. `S(direction)`, exactly `windows_to_mobile` or `mobile_to_windows`
+8. `S(kind)`
 9. `S(messageId)`
 10. `U64(sequence)`
 11. `I64(createdAt)`
 12. `S(payloadEncoding)`, exactly `encrypted-json`
 13. `B(nonce)`
-14. `I64(ciphertextLength)`, including the 16-byte GCM tag
+
+`ciphertext` is authenticated by AES-GCM and is not appended to its own AAD.
+Version 1 has no envelope `ciphertextLength`, `senderRole`, or `messageType`
+field. Session-confirmation `senderRole` remains a separate transcript field
+with values `android` and `windows`.
 
 ## Key derivation and encryption
 
