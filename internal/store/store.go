@@ -26,9 +26,22 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err := db.Exec("alter table devices add column device_token_hash text"); err != nil && !isDuplicateColumnError(err) {
-		db.Close()
-		return nil, err
+	migrations := []string{
+		"alter table hosts add column signing_public_key text not null default ''",
+		"alter table hosts add column agreement_public_key text not null default ''",
+		"alter table hosts add column key_version integer not null default 0",
+		"alter table hosts add column revoked integer not null default 0",
+		"alter table devices add column signing_public_key text not null default ''",
+		"alter table devices add column agreement_public_key text not null default ''",
+		"alter table devices add column key_version integer not null default 0",
+		"alter table devices add column binding_version integer not null default 0",
+		"alter table devices add column device_token_hash text",
+	}
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil && !isDuplicateColumnError(err) {
+			db.Close()
+			return nil, err
+		}
 	}
 	return &Store{db: db}, nil
 }

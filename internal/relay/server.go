@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -12,10 +14,11 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
-	hostsvc "github.com/mycodex/mycodex-relay/internal/host"
 	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
+	"github.com/mycodex/mycodex-relay/internal/security"
 	"github.com/mycodex/mycodex-relay/internal/session"
 	"github.com/mycodex/mycodex-relay/internal/store"
 	"github.com/mycodex/mycodex-relay/internal/tenant"
@@ -26,6 +29,14 @@ type Server struct {
 	mux    *http.ServeMux
 	store  *store.Store
 
+	authOnce    sync.Once
+	identity    *security.RelayIdentitySigner
+	authService *authsvc.Service
+	authErr     error
+
+	challengeMu       sync.Mutex
+	challengeAttempts map[string]challengeAttempt
+
 	mu      sync.RWMutex
 	hosts   map[string]*webSocketSession
 	devices map[string]*webSocketSession
@@ -33,14 +44,18 @@ type Server struct {
 
 func NewServer(cfg config.Config) *Server {
 	server := &Server{
-		config:  cfg,
-		mux:     http.NewServeMux(),
-		hosts:   make(map[string]*webSocketSession),
-		devices: make(map[string]*webSocketSession),
+		config:            cfg,
+		mux:               http.NewServeMux(),
+		hosts:             make(map[string]*webSocketSession),
+		devices:           make(map[string]*webSocketSession),
+		challengeAttempts: make(map[string]challengeAttempt),
 	}
 	server.mux.HandleFunc("/health", server.handleHealth)
+	server.mux.HandleFunc("/.well-known/mycodex-relay", server.handleMetadata)
 	server.mux.HandleFunc("/v1/ws", server.handleWebSocket)
-	server.mux.HandleFunc("/v1/hosts/register", server.handleRegisterHost)
+	server.mux.HandleFunc("/v1/hosts/enroll", server.handleEnrollHost)
+	server.mux.HandleFunc("/v1/auth/challenges", server.handleCreateChallenge)
+	server.mux.HandleFunc("/v1/auth/prove", server.handleProve)
 	server.mux.HandleFunc("/v1/pairing/invites", server.handleCreateInvite)
 	server.mux.HandleFunc("/v1/pairing/claim", server.handleClaimInvite)
 	server.mux.HandleFunc("/v1/pairing/bind", server.handleBindPairing)
@@ -61,6 +76,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
+	if err := s.ensureAuth(); err != nil {
+		return fmt.Errorf("initialize Relay identity: %w", err)
+	}
 	tlsConfig, err := s.buildTLSConfig()
 	if err != nil {
 		return err
@@ -148,30 +166,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("{\"status\":\"ok\"}\n"))
 }
 
-func (s *Server) handleRegisterHost(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) {
-		return
-	}
-	var request struct {
-		TenantID      string `json:"tenantId"`
-		HostID        string `json:"hostId"`
-		DisplayName   string `json:"displayName"`
-		HostPublicKey string `json:"hostPublicKey"`
-	}
-	if !s.readJSON(w, r, &request) {
-		return
-	}
-	if !s.authorizeTenant(w, r, request.TenantID) {
-		return
-	}
-	service := hostsvc.NewService(s.store)
-	if err := service.RegisterHost(request.TenantID, request.HostID, request.DisplayName, request.HostPublicKey); err != nil {
-		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"tenantId": request.TenantID, "hostId": request.HostID})
-}
-
 func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMethod(w, r, http.MethodPost) {
 		return
@@ -184,7 +178,13 @@ func (s *Server) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	if !s.readJSON(w, r, &request) {
 		return
 	}
-	if !s.authorizeTenant(w, r, request.TenantID) {
+	if !s.authorizeTicket(w, r, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectHost,
+		SubjectID:   request.HostID,
+		TenantID:    request.TenantID,
+		HostID:      request.HostID,
+		Purpose:     authsvc.PurposePairingInviteCreate,
+	}) {
 		return
 	}
 	ttl := request.TTLSeconds
@@ -264,7 +264,14 @@ func (s *Server) handleApprovePairing(w http.ResponseWriter, r *http.Request) {
 	if !s.readJSON(w, r, &request) {
 		return
 	}
-	if !s.authorizeTenant(w, r, request.TenantID) {
+	if !s.authorizeTicket(w, r, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectHost,
+		SubjectID:   request.HostID,
+		TenantID:    request.TenantID,
+		HostID:      request.HostID,
+		DeviceID:    request.DeviceID,
+		Purpose:     authsvc.PurposePairingClaimApprove,
+	}) {
 		return
 	}
 	service := pairing.NewService(s.store)
@@ -331,7 +338,13 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := r.URL.Query().Get("tenantId")
 	hostID := r.URL.Query().Get("hostId")
-	if !s.authorizeTenant(w, r, tenantID) {
+	if !s.authorizeTicket(w, r, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectHost,
+		SubjectID:   hostID,
+		TenantID:    tenantID,
+		HostID:      hostID,
+		Purpose:     authsvc.PurposeDeviceList,
+	}) {
 		return
 	}
 	service := pairing.NewService(s.store)
@@ -376,7 +389,14 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	if !s.readJSON(w, r, &request) {
 		return
 	}
-	if !s.authorizeTenant(w, r, request.TenantID) {
+	if !s.authorizeTicket(w, r, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectHost,
+		SubjectID:   request.HostID,
+		TenantID:    request.TenantID,
+		HostID:      request.HostID,
+		DeviceID:    request.DeviceID,
+		Purpose:     authsvc.PurposeDeviceRevoke,
+	}) {
 		return
 	}
 	service := pairing.NewService(s.store)
@@ -405,11 +425,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(webSocketReadLimit(s.config.DefaultQuota.MaxMessageBytes))
 	ws := &webSocketSession{session: activeSession, conn: conn}
 	s.addSession(ws)
-	if !s.authenticateSession(r, activeSession) {
-		s.removeSession(ws)
-		_ = conn.CloseNow()
-		return
-	}
 	defer func() {
 		s.removeSession(ws)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -448,20 +463,33 @@ func (s *Server) authenticateSession(r *http.Request, activeSession session.Sess
 	if !ok {
 		return false
 	}
+	var scope authsvc.TicketScope
 	switch activeSession.ConnectionType {
 	case session.ConnectionHost:
-		tenantService := tenant.NewService(s.store)
-		item, err := tenantService.Get(activeSession.TenantID)
-		if err != nil || !item.Enabled {
-			return false
+		scope = authsvc.TicketScope{
+			SubjectType: authsvc.SubjectHost,
+			SubjectID:   activeSession.HostID,
+			TenantID:    activeSession.TenantID,
+			HostID:      activeSession.HostID,
+			DeviceID:    activeSession.DeviceID,
+			Purpose:     authsvc.PurposeWebSocketHost,
 		}
-		return tenant.VerifySecretHash(item.SecretHash, token)
 	case session.ConnectionDevice:
-		pairingService := pairing.NewService(s.store)
-		return pairingService.VerifyDeviceToken(activeSession.TenantID, activeSession.HostID, activeSession.DeviceID, token)
+		scope = authsvc.TicketScope{
+			SubjectType: authsvc.SubjectDevice,
+			SubjectID:   activeSession.DeviceID,
+			TenantID:    activeSession.TenantID,
+			HostID:      activeSession.HostID,
+			DeviceID:    activeSession.DeviceID,
+			Purpose:     authsvc.PurposeWebSocketDevice,
+		}
 	default:
 		return false
 	}
+	if err := s.ensureAuth(); err != nil || s.authService == nil {
+		return false
+	}
+	return s.authService.ConsumeTicket(token, scope) == nil
 }
 
 func (s *Server) authorizeTenant(w http.ResponseWriter, r *http.Request, tenantID string) bool {
@@ -493,9 +521,19 @@ func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method st
 }
 
 func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, target interface{}) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, int64(s.config.DefaultQuota.MaxMessageBytes))
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, protocol.ErrorPayload{Code: "request_too_large"})
+			return false
+		}
+		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: "invalid_json"})
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: "invalid_json"})
 		return false
 	}

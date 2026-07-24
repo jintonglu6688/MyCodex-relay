@@ -23,6 +23,7 @@ func TestServeExposesTLSAndLoopbackInternalHealth(t *testing.T) {
 	internalHost, internalPort := reserveEndpoint(t)
 	certPath, keyPath := testTLSIdentity(t)
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = publicHost
 	cfg.ListenPort = publicPort
 	cfg.PublicHost = publicHost
@@ -71,6 +72,7 @@ func TestServeRejectsNonLoopbackInternalListenerBeforeBinding(t *testing.T) {
 	publicHost, publicPort := reserveEndpoint(t)
 	certPath, keyPath := testTLSIdentity(t)
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = publicHost
 	cfg.ListenPort = publicPort
 	cfg.InternalListenHost = "0.0.0.0"
@@ -88,6 +90,7 @@ func TestServeRejectsInternalPortCollisionBeforeBinding(t *testing.T) {
 	publicHost, publicPort := reserveEndpoint(t)
 	certPath, keyPath := testTLSIdentity(t)
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = publicHost
 	cfg.ListenPort = publicPort
 	cfg.InternalListenHost = "127.0.0.1"
@@ -105,6 +108,7 @@ func TestServeRejectsInternalListenerWithoutPublicTLSBeforeBinding(t *testing.T)
 	publicHost, publicPort := reserveEndpoint(t)
 	_, internalPort := reserveEndpoint(t)
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = publicHost
 	cfg.ListenPort = publicPort
 	cfg.InternalListenHost = "127.0.0.1"
@@ -130,6 +134,7 @@ func TestServeClosesPublicListenerWhenInternalBindFails(t *testing.T) {
 	internalPort, _ := strconv.Atoi(rawInternalPort)
 	certPath, keyPath := testTLSIdentity(t)
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = publicHost
 	cfg.ListenPort = publicPort
 	cfg.InternalListenHost = "127.0.0.1"

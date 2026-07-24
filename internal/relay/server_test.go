@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
 	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
@@ -109,6 +110,7 @@ func TestServeRejectsInvalidTLSCertificateBeforeBinding(t *testing.T) {
 		t.Fatalf("release port: %v", err)
 	}
 	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
 	cfg.ListenHost = host
 	cfg.ListenPort = port
 	cfg.TLS = config.TLSConfig{
@@ -425,20 +427,46 @@ func TestWebSocketRejectsHostSendingMobileToWindows(t *testing.T) {
 }
 
 func TestWebSocketAuthenticatedHostAndDeviceRoutePingPong(t *testing.T) {
-	st, tenantID, tenantSecret, deviceToken := authenticatedRelayState(t)
-	defer st.Close()
-	server := NewServerWithStore(config.Default(), st)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
+	fixture := newHTTPAuthFixture(t)
+	hostPrivate, _ := enrollHTTPHost(t, fixture)
+	devicePrivate := newHTTPPrivateKey(t)
+	devicePublic := encodeHTTPPublicKey(&devicePrivate.PublicKey)
+	if _, err := fixture.store.DB().Exec(
+		`insert into devices
+(tenant_id, host_id, device_id, display_name, platform, device_public_key,
+ signing_public_key, agreement_public_key, key_version, binding_version,
+ device_token_hash, revoked, bound_at)
+values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, ?)`,
+		fixture.tenantID, fixture.hostID, fixture.deviceID,
+		"Android", "android", devicePublic, devicePublic, devicePublic, 1, 1,
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert device identity: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelayWithAuth(t, ctx, httpServer.URL, "connection=host&tenantId="+tenantID+"&hostId=host_a&sessionId=host_session", tenantSecret)
+	hostTicket := issueHTTPAuthTicket(t, fixture.server.URL, hostPrivate, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectHost,
+		SubjectID:   fixture.hostID,
+		TenantID:    fixture.tenantID,
+		HostID:      fixture.hostID,
+		DeviceID:    fixture.deviceID,
+		Purpose:     authsvc.PurposeWebSocketHost,
+	})
+	deviceTicket := issueHTTPAuthTicket(t, fixture.server.URL, devicePrivate, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectDevice,
+		SubjectID:   fixture.deviceID,
+		TenantID:    fixture.tenantID,
+		HostID:      fixture.hostID,
+		DeviceID:    fixture.deviceID,
+		Purpose:     authsvc.PurposeWebSocketDevice,
+	})
+	host := dialRelayWithAuth(t, ctx, fixture.server.URL, "connection=host&tenantId="+fixture.tenantID+"&hostId="+fixture.hostID+"&deviceId="+fixture.deviceID+"&sessionId=host_session", hostTicket.Ticket)
 	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelayWithAuth(t, ctx, httpServer.URL, "connection=device&tenantId="+tenantID+"&hostId=host_a&deviceId=device_a&sessionId=device_session", deviceToken)
+	device := dialRelayWithAuth(t, ctx, fixture.server.URL, "connection=device&tenantId="+fixture.tenantID+"&hostId="+fixture.hostID+"&deviceId="+fixture.deviceID+"&sessionId=device_session", deviceTicket.Ticket)
 	defer device.Close(websocket.StatusNormalClosure, "")
 
-	ping := protocol.Envelope{ProtocolVersion: 1, MessageID: "auth-ping", TenantID: tenantID, HostID: "host_a", DeviceID: "device_a", SessionID: "device_session", Direction: protocol.DirectionMobileToWindows, Kind: "rpc.request", Sequence: 1, PayloadEncoding: protocol.PayloadEncodingPlainJSON, Payload: "{}"}
+	ping := protocol.Envelope{ProtocolVersion: 1, MessageID: "auth-ping", TenantID: fixture.tenantID, HostID: fixture.hostID, DeviceID: fixture.deviceID, SessionID: "device_session", Direction: protocol.DirectionMobileToWindows, Kind: "rpc.request", Sequence: 1, PayloadEncoding: protocol.PayloadEncodingPlainJSON, Payload: "{}"}
 	writeEnvelope(t, ctx, device, ping)
 	if received := readEnvelope(t, ctx, host); received.MessageID != "auth-ping" {
 		t.Fatalf("unexpected routed ping: %+v", received)
@@ -446,9 +474,9 @@ func TestWebSocketAuthenticatedHostAndDeviceRoutePingPong(t *testing.T) {
 }
 
 func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
-	st, tenantID, _, _ := authenticatedRelayState(t)
+	st, cfg, tenantID, _, _ := authenticatedRelayState(t)
 	defer st.Close()
-	server := NewServerWithStore(config.Default(), st)
+	server := NewServerWithStore(cfg, st)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
@@ -465,9 +493,9 @@ func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
 }
 
 func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
-	st, tenantID, _, _ := authenticatedRelayState(t)
+	st, cfg, tenantID, _, _ := authenticatedRelayState(t)
 	defer st.Close()
-	server := NewServerWithStore(config.Default(), st)
+	server := NewServerWithStore(cfg, st)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
@@ -484,13 +512,13 @@ func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
 }
 
 func TestWebSocketRejectsRevokedDeviceAuthorization(t *testing.T) {
-	st, tenantID, _, deviceToken := authenticatedRelayState(t)
+	st, cfg, tenantID, _, deviceToken := authenticatedRelayState(t)
 	defer st.Close()
 	pairingService := pairing.NewService(st)
 	if err := pairingService.RevokeDevice(tenantID, "host_a", "device_a"); err != nil {
 		t.Fatalf("revoke device: %v", err)
 	}
-	server := NewServerWithStore(config.Default(), st)
+	server := NewServerWithStore(cfg, st)
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
@@ -553,9 +581,11 @@ func readEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn) proto
 	return envelope
 }
 
-func authenticatedRelayState(t *testing.T) (*store.Store, string, string, string) {
+func authenticatedRelayState(t *testing.T) (*store.Store, config.Config, string, string, string) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
+	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
+	st, err := store.Open(cfg.StatePath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -569,5 +599,5 @@ func authenticatedRelayState(t *testing.T) (*store.Store, string, string, string
 	if err != nil {
 		t.Fatalf("approve device: %v", err)
 	}
-	return st, created.TenantID, tenantSecret, deviceToken
+	return st, cfg, created.TenantID, tenantSecret, deviceToken
 }

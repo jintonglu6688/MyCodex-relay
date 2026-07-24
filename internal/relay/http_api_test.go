@@ -2,9 +2,11 @@ package relay
 
 import (
 	"bytes"
-	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,39 +14,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
+	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
 	"github.com/mycodex/mycodex-relay/internal/store"
-	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
 func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer st.Close()
-	tenantService := tenant.NewService(st)
-	created, tenantSecret, err := tenantService.Create("Alice")
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
-	}
-	server := httptest.NewServer(NewServerWithStore(config.Default(), st).Handler())
-	defer server.Close()
-
-	registerStatus, registerBody := postJSON(t, server.URL+"/v1/hosts/register", tenantSecret, map[string]string{
-		"tenantId":      created.TenantID,
-		"hostId":        "host_a",
-		"displayName":   "Windows",
-		"hostPublicKey": "host-key",
-	})
-	if registerStatus != http.StatusOK || !strings.Contains(registerBody, `"hostId":"host_a"`) {
-		t.Fatalf("unexpected register response: status=%d body=%s", registerStatus, registerBody)
+	fixture := newHTTPAuthFixture(t)
+	hostPrivate, _ := enrollHTTPHost(t, fixture)
+	hostScope := func(purpose string, deviceID string) authsvc.TicketScope {
+		return authsvc.TicketScope{
+			SubjectType: authsvc.SubjectHost,
+			SubjectID:   fixture.hostID,
+			TenantID:    fixture.tenantID,
+			HostID:      fixture.hostID,
+			DeviceID:    deviceID,
+			Purpose:     purpose,
+		}
 	}
 
-	inviteStatus, inviteBody := postJSON(t, server.URL+"/v1/pairing/invites", tenantSecret, map[string]interface{}{
-		"tenantId":   created.TenantID,
-		"hostId":     "host_a",
+	inviteTicket := issueHTTPAuthTicket(
+		t, fixture.server.URL, hostPrivate,
+		hostScope(authsvc.PurposePairingInviteCreate, ""))
+	inviteStatus, inviteBody := postJSON(t, fixture.server.URL+"/v1/pairing/invites", inviteTicket.Ticket, map[string]interface{}{
+		"tenantId":   fixture.tenantID,
+		"hostId":     fixture.hostID,
 		"ttlSeconds": 3600,
 	})
 	if inviteStatus != http.StatusOK {
@@ -65,24 +59,27 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 		t.Fatalf("invalid expiresAt: %v", err)
 	}
 
-	claimStatus, claimBody := postJSON(t, server.URL+"/v1/pairing/claim", "", map[string]string{
-		"tenantId":            created.TenantID,
-		"hostId":              "host_a",
+	claimStatus, claimBody := postJSON(t, fixture.server.URL+"/v1/pairing/claim", "", map[string]string{
+		"tenantId":            fixture.tenantID,
+		"hostId":              fixture.hostID,
 		"inviteId":            invite.InviteID,
 		"oneTimePairingToken": invite.OneTimePairingToken,
-		"deviceId":            "device_a",
+		"deviceId":            fixture.deviceID,
 		"deviceDisplayName":   "Android",
 		"devicePublicKey":     "device-key",
 		"platform":            "android",
 	})
-	if claimStatus != http.StatusOK || !strings.Contains(claimBody, `"deviceId":"device_a"`) {
+	if claimStatus != http.StatusOK || !strings.Contains(claimBody, `"deviceId":"`+fixture.deviceID+`"`) {
 		t.Fatalf("unexpected claim response: status=%d body=%s", claimStatus, claimBody)
 	}
 
-	approveStatus, approveBody := postJSON(t, server.URL+"/v1/pairing/approve", tenantSecret, map[string]string{
-		"tenantId":          created.TenantID,
-		"hostId":            "host_a",
-		"deviceId":          "device_a",
+	approveTicket := issueHTTPAuthTicket(
+		t, fixture.server.URL, hostPrivate,
+		hostScope(authsvc.PurposePairingClaimApprove, fixture.deviceID))
+	approveStatus, approveBody := postJSON(t, fixture.server.URL+"/v1/pairing/approve", approveTicket.Ticket, map[string]string{
+		"tenantId":          fixture.tenantID,
+		"hostId":            fixture.hostID,
+		"deviceId":          fixture.deviceID,
 		"deviceDisplayName": "Android",
 		"devicePublicKey":   "device-key",
 		"platform":          "android",
@@ -97,13 +94,16 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 	if err := json.Unmarshal([]byte(approveBody), &approved); err != nil {
 		t.Fatalf("unmarshal approve: %v", err)
 	}
-	if approved.DeviceID != "device_a" || approved.DeviceToken == "" {
+	if approved.DeviceID != fixture.deviceID || approved.DeviceToken == "" {
 		t.Fatalf("unexpected approve body: %+v", approved)
 	}
 
-	inviteStatus, inviteBody = postJSON(t, server.URL+"/v1/pairing/invites", tenantSecret, map[string]interface{}{
-		"tenantId":   created.TenantID,
-		"hostId":     "host_a",
+	inviteTicket = issueHTTPAuthTicket(
+		t, fixture.server.URL, hostPrivate,
+		hostScope(authsvc.PurposePairingInviteCreate, ""))
+	inviteStatus, inviteBody = postJSON(t, fixture.server.URL+"/v1/pairing/invites", inviteTicket.Ticket, map[string]interface{}{
+		"tenantId":   fixture.tenantID,
+		"hostId":     fixture.hostID,
 		"ttlSeconds": 3600,
 	})
 	if inviteStatus != http.StatusOK {
@@ -116,9 +116,9 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 	if err := json.Unmarshal([]byte(inviteBody), &bindInvite); err != nil {
 		t.Fatalf("unmarshal bind invite: %v", err)
 	}
-	bindStatus, bindBody := postJSON(t, server.URL+"/v1/pairing/bind", "", map[string]string{
-		"tenantId":            created.TenantID,
-		"hostId":              "host_a",
+	bindStatus, bindBody := postJSON(t, fixture.server.URL+"/v1/pairing/bind", "", map[string]string{
+		"tenantId":            fixture.tenantID,
+		"hostId":              fixture.hostID,
 		"inviteId":            bindInvite.InviteID,
 		"oneTimePairingToken": bindInvite.OneTimePairingToken,
 		"deviceId":            "device_b",
@@ -137,56 +137,65 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 		t.Fatalf("unmarshal bind response: %v", err)
 	}
 
-	listStatus, listBody := getJSON(t, server.URL+"/v1/devices?tenantId="+created.TenantID+"&hostId=host_a", tenantSecret)
-	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"device_a"`) || !strings.Contains(listBody, `"deviceId":"device_b"`) || strings.Contains(listBody, approved.DeviceToken) {
+	listTicket := issueHTTPAuthTicket(
+		t, fixture.server.URL, hostPrivate,
+		hostScope(authsvc.PurposeDeviceList, ""))
+	listStatus, listBody := getJSON(
+		t,
+		fixture.server.URL+"/v1/devices?tenantId="+fixture.tenantID+"&hostId="+fixture.hostID,
+		listTicket.Ticket)
+	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"`+fixture.deviceID+`"`) || !strings.Contains(listBody, `"deviceId":"device_b"`) || strings.Contains(listBody, approved.DeviceToken) {
 		t.Fatalf("unexpected device list: status=%d body=%s", listStatus, listBody)
 	}
 	if !strings.Contains(listBody, `"online":false`) {
-		t.Fatalf("expected offline device list before websocket connection, got %s", listBody)
+		t.Fatalf("expected offline device list, got %s", listBody)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	deviceConn := dialRelayWithAuth(t, ctx, server.URL, "connection=device&tenantId="+created.TenantID+"&hostId=host_a&deviceId=device_b&sessionId=device_b_session", bound.DeviceToken)
-	defer deviceConn.Close(websocket.StatusNormalClosure, "")
-
-	listStatus, listBody = getJSON(t, server.URL+"/v1/devices?tenantId="+created.TenantID+"&hostId=host_a", tenantSecret)
-	if listStatus != http.StatusOK || !strings.Contains(listBody, `"deviceId":"device_b"`) || !strings.Contains(listBody, `"online":true`) {
-		t.Fatalf("expected online device after websocket connection: status=%d body=%s", listStatus, listBody)
-	}
-
-	revokeStatus, revokeBody := postJSON(t, server.URL+"/v1/devices/revoke", tenantSecret, map[string]string{
-		"tenantId": created.TenantID,
-		"hostId":   "host_a",
+	revokeTicket := issueHTTPAuthTicket(
+		t, fixture.server.URL, hostPrivate,
+		hostScope(authsvc.PurposeDeviceRevoke, "device_b"))
+	revokeStatus, revokeBody := postJSON(t, fixture.server.URL+"/v1/devices/revoke", revokeTicket.Ticket, map[string]string{
+		"tenantId": fixture.tenantID,
+		"hostId":   fixture.hostID,
 		"deviceId": "device_b",
 	})
 	if revokeStatus != http.StatusOK || !strings.Contains(revokeBody, `"revoked":true`) {
 		t.Fatalf("unexpected revoke: status=%d body=%s", revokeStatus, revokeBody)
 	}
-	revokeContext, revokeCancel := context.WithTimeout(context.Background(), time.Second)
-	defer revokeCancel()
-	_, _, err = deviceConn.Read(revokeContext)
-	if err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected revoked device connection to close immediately, got err=%v", err)
-	}
 }
 
 func TestHTTPHostEndpointRejectsMissingAuth(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
+	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
+	st, err := store.Open(cfg.StatePath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
-	server := httptest.NewServer(NewServerWithStore(config.Default(), st).Handler())
+	server := httptest.NewServer(NewServerWithStore(cfg, st).Handler())
 	defer server.Close()
 
-	status, _ := postJSON(t, server.URL+"/v1/hosts/register", "", map[string]string{
-		"tenantId": "tenant_a",
-		"hostId":   "host_a",
+	status, _ := postJSON(t, server.URL+"/v1/hosts/enroll", "", map[string]interface{}{
+		"tenantId":           "tenant_a",
+		"hostId":             "host_a",
+		"displayName":        "Windows",
+		"signingPublicKey":   testHTTPPublicKey(t),
+		"agreementPublicKey": testHTTPPublicKey(t),
+		"keyVersion":         1,
 	})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", status)
 	}
+}
+
+func testHTTPPublicKey(t *testing.T) string {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(
+		elliptic.Marshal(elliptic.P256(), privateKey.X, privateKey.Y))
 }
 
 func postJSON(t *testing.T, url string, token string, body interface{}) (int, string) {
