@@ -3,7 +3,6 @@ package tenant
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -37,10 +36,19 @@ func (s *Service) Create(displayName string) (Tenant, string, error) {
 	if name == "" {
 		return Tenant{}, "", fmt.Errorf("display name cannot be empty")
 	}
-	tenantID, err := randomID("tenant")
-	if err != nil {
+	var tenantUUID [16]byte
+	if _, err := rand.Read(tenantUUID[:]); err != nil {
 		return Tenant{}, "", err
 	}
+	tenantUUID[6] = (tenantUUID[6] & 0x0f) | 0x40
+	tenantUUID[8] = (tenantUUID[8] & 0x3f) | 0x80
+	tenantID := fmt.Sprintf(
+		"%x-%x-%x-%x-%x",
+		tenantUUID[0:4],
+		tenantUUID[4:6],
+		tenantUUID[6:8],
+		tenantUUID[8:10],
+		tenantUUID[10:16])
 	secret, err := security.GenerateToken(32)
 	if err != nil {
 		return Tenant{}, "", err
@@ -139,12 +147,4 @@ func (s *Service) RotateSecret(tenantID string) (string, error) {
 		return "", fmt.Errorf("tenant_not_found")
 	}
 	return secret, nil
-}
-
-func randomID(prefix string) (string, error) {
-	buffer := make([]byte, 12)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", err
-	}
-	return prefix + "_" + base64.RawURLEncoding.EncodeToString(buffer), nil
 }
