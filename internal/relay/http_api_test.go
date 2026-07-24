@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -157,10 +158,16 @@ func TestHTTPHostPairingAndDeviceLifecycle(t *testing.T) {
 	revokeStatus, revokeBody := postJSON(t, server.URL+"/v1/devices/revoke", tenantSecret, map[string]string{
 		"tenantId": created.TenantID,
 		"hostId":   "host_a",
-		"deviceId": "device_a",
+		"deviceId": "device_b",
 	})
 	if revokeStatus != http.StatusOK || !strings.Contains(revokeBody, `"revoked":true`) {
 		t.Fatalf("unexpected revoke: status=%d body=%s", revokeStatus, revokeBody)
+	}
+	revokeContext, revokeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer revokeCancel()
+	_, _, err = deviceConn.Read(revokeContext)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected revoked device connection to close immediately, got err=%v", err)
 	}
 }
 

@@ -384,6 +384,7 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, protocol.ErrorPayload{Code: errorCode(err)})
 		return
 	}
+	s.disconnectDevice(request.TenantID, request.HostID, request.DeviceID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tenantId": request.TenantID, "hostId": request.HostID, "deviceId": request.DeviceID, "revoked": true})
 }
 
@@ -404,6 +405,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(webSocketReadLimit(s.config.DefaultQuota.MaxMessageBytes))
 	ws := &webSocketSession{session: activeSession, conn: conn}
 	s.addSession(ws)
+	if !s.authenticateSession(r, activeSession) {
+		s.removeSession(ws)
+		_ = conn.CloseNow()
+		return
+	}
 	defer func() {
 		s.removeSession(ws)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -542,6 +548,17 @@ func (s *Server) isDeviceOnline(tenantID string, hostID string, deviceID string)
 	defer s.mu.RUnlock()
 	_, ok := s.devices[deviceKey(tenantID, hostID, deviceID)]
 	return ok
+}
+
+func (s *Server) disconnectDevice(tenantID string, hostID string, deviceID string) {
+	s.mu.Lock()
+	key := deviceKey(tenantID, hostID, deviceID)
+	target := s.devices[key]
+	delete(s.devices, key)
+	s.mu.Unlock()
+	if target != nil {
+		_ = target.conn.CloseNow()
+	}
 }
 
 func (s *Server) routeEnvelope(sender *webSocketSession, envelope protocol.Envelope) {
