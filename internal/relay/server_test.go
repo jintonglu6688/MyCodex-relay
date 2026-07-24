@@ -138,7 +138,7 @@ func TestWebSocketRoutesPingPongBetweenDeviceAndHost(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -192,7 +192,7 @@ func TestWebSocketRoutesLargeResponseWithinConfiguredMessageLimit(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -230,7 +230,7 @@ func TestWebSocketRoutesRemoteHistoryResponseOverOneMegabyte(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -267,7 +267,7 @@ func TestWebSocketForwardsRemoteCodingPayloadUntouched(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -301,7 +301,7 @@ func TestWebSocketRejectsCrossTenantRoute(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_b&hostId=host_a&deviceId=device_a&sessionId=device_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -333,7 +333,7 @@ func TestWebSocketRejectsDeviceEnvelopeTenantMismatchBeforeRouting(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tenantBHost := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_b&hostId=host_b&sessionId=host_b_session")
+	tenantBHost := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_b&hostId=host_b&deviceId=device_a&sessionId=host_b_session")
 	defer tenantBHost.Close(websocket.StatusNormalClosure, "")
 	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_a_session")
 	defer device.Close(websocket.StatusNormalClosure, "")
@@ -401,7 +401,7 @@ func TestWebSocketRejectsHostSendingMobileToWindows(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&sessionId=host_a_session")
+	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_a_session")
 	defer host.Close(websocket.StatusNormalClosure, "")
 
 	message := protocol.Envelope{

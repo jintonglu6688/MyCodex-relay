@@ -308,7 +308,7 @@ func (s *Server) addSession(ws *webSocketSession) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ws.session.ConnectionType == session.ConnectionHost {
-		s.hosts[hostKey(ws.session.TenantID, ws.session.HostID)] = ws
+		s.hosts[deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)] = ws
 	}
 	if ws.session.ConnectionType == session.ConnectionDevice {
 		s.devices[deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)] = ws
@@ -319,7 +319,7 @@ func (s *Server) removeSession(ws *webSocketSession) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ws.session.ConnectionType == session.ConnectionHost {
-		key := hostKey(ws.session.TenantID, ws.session.HostID)
+		key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
 		if s.hosts[key] == ws {
 			delete(s.hosts, key)
 		}
@@ -355,7 +355,7 @@ func (s *Server) routeEnvelope(sender *webSocketSession, envelope protocol.Envel
 	s.mu.RLock()
 	switch envelope.Direction {
 	case protocol.DirectionMobileToWindows:
-		target = s.hosts[hostKey(envelope.TenantID, envelope.HostID)]
+		target = s.hosts[deviceKey(envelope.TenantID, envelope.HostID, envelope.DeviceID)]
 	case protocol.DirectionWindowsToMobile:
 		target = s.devices[deviceKey(envelope.TenantID, envelope.HostID, envelope.DeviceID)]
 	default:
@@ -430,6 +430,9 @@ func sessionFromRequest(r *http.Request) (session.Session, error) {
 	}
 	switch connection {
 	case "host":
+		if result.DeviceID == "" {
+			return session.Session{}, fmt.Errorf("deviceId is required")
+		}
 		result.ConnectionType = session.ConnectionHost
 	case "device":
 		if result.DeviceID == "" {
@@ -461,7 +464,9 @@ func deviceKey(tenantID string, hostID string, deviceID string) string {
 func validateSenderEnvelope(sender session.Session, envelope protocol.Envelope) string {
 	switch sender.ConnectionType {
 	case session.ConnectionHost:
-		if envelope.TenantID != sender.TenantID || envelope.HostID != sender.HostID {
+		if envelope.TenantID != sender.TenantID ||
+			envelope.HostID != sender.HostID ||
+			envelope.DeviceID != sender.DeviceID {
 			return "identity_mismatch"
 		}
 		if envelope.Direction != protocol.DirectionWindowsToMobile {
