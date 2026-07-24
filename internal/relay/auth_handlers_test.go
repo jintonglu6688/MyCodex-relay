@@ -247,6 +247,23 @@ func TestChallengeEndpointUsesConfiguredAttemptLimit(t *testing.T) {
 	}
 }
 
+func TestDefaultChallengeLimitSupportsAllHostsPollingWithActionHeadroom(t *testing.T) {
+	cfg := config.Default()
+	server := NewServer(cfg)
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/challenges", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	required := cfg.DefaultQuota.MaxWindowsHosts * 60
+	for attempt := 1; attempt <= required; attempt++ {
+		if !server.allowChallenge(request) {
+			t.Fatalf(
+				"default challenge limit rejected attempt %d of %d",
+				attempt,
+				required,
+			)
+		}
+	}
+}
+
 func TestReadJSONRejectsConfiguredMaxRequestBytes(t *testing.T) {
 	cfg := config.Default()
 	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")

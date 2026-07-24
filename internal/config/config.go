@@ -73,7 +73,7 @@ func Default() Config {
 			MaxFileBytes:             104857600,
 			MaxFileTransfers:         2,
 			PairingInvitesPerHour:    30,
-			PairingAttemptsPerMinute: 10,
+			PairingAttemptsPerMinute: 240,
 			IdleTimeoutSeconds:       120,
 			SessionResumeSeconds:     60,
 		},
