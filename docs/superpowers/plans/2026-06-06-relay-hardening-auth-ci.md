@@ -1,4 +1,6 @@
-# Relay Hardening Auth CI Implementation Plan
+# Superseded — Relay Hardening Auth CI Implementation Plan
+
+> Superseded by `E:\MyCodex\docs\superpowers\plans\2026-07-24-encrypted-remote-business-channel.md`. This historical document describes a plaintext Relay protocol and is not an implementation reference.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

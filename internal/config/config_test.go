@@ -16,6 +16,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.DefaultQuota.MaxDevicesPerHost != 8 {
 		t.Fatalf("unexpected max devices: %d", cfg.DefaultQuota.MaxDevicesPerHost)
 	}
+	if cfg.DefaultQuota.MaxMessageBytes != 11*1024*1024 {
+		t.Fatalf("unexpected secure message limit: %d", cfg.DefaultQuota.MaxMessageBytes)
+	}
 }
 
 func TestSaveAndLoad(t *testing.T) {

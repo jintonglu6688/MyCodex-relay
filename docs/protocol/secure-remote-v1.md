@@ -91,11 +91,15 @@ AuthTicket
   ticket, purpose, expiresAt
 
 SessionHello
-  protocolVersion, tenantId, hostId, deviceId, bindingVersion,
-  keyVersion, ephemeralPublicKey, nonce, createdAt, signature
+  protocolVersion, frameType, sessionId, tenantId, hostId, deviceId, direction,
+  bindingVersion, keyVersion, ephemeralPublicKey, nonce, createdAt, signature
+
+SessionConfirmation
+  protocolVersion, frameType, sessionId, tenantId, hostId, deviceId, direction,
+  senderRole, confirmation
 
 SecureEnvelope
-  protocolVersion, sessionId, tenantId, hostId, deviceId,
+  protocolVersion, frameType, sessionId, tenantId, hostId, deviceId,
   direction, kind, messageId, sequence, createdAt,
   payloadEncoding, nonce, ciphertext
 ```
@@ -130,11 +134,11 @@ direction:
   windows_to_mobile
   mobile_to_windows
 
-handshake kind:
+frameType:
   session.client_hello
   session.server_hello
-  session.client_confirm
-  session.server_confirm
+  session.confirmation
+  session.envelope
 
 payloadEncoding:
   encrypted-json
@@ -305,14 +309,17 @@ The client Hello transcript is:
 
 1. `S(domain)`
 2. `I64(protocolVersion)`
-3. `S(tenantId)`
-4. `S(hostId)`
-5. `S(deviceId)`
-6. `I64(bindingVersion)`
-7. `I64(keyVersion)`
-8. `B(ephemeralPublicKey)`
-9. `B(nonce)`
-10. `I64(createdAt)`
+3. `S(frameType)`, exactly `session.client_hello`
+4. `S(sessionId)`, a 32-byte Base64Url value
+5. `S(tenantId)`
+6. `S(hostId)`
+7. `S(deviceId)`
+8. `S(direction)`, exactly `mobile_to_windows`
+9. `I64(bindingVersion)`
+10. `I64(keyVersion)`
+11. `B(ephemeralPublicKey)`
+12. `B(nonce)`
+13. `I64(createdAt)`
 
 The device signs this transcript. The unsigned server Hello repeats the same
 locked `SessionHello` field layout with the host key version, server ephemeral
@@ -320,14 +327,17 @@ public key, server nonce and server creation time:
 
 1. `S(domain)`
 2. `I64(protocolVersion)`
-3. `S(tenantId)`
-4. `S(hostId)`
-5. `S(deviceId)`
-6. `I64(bindingVersion)`
-7. `I64(keyVersion)`
-8. `B(ephemeralPublicKey)`
-9. `B(nonce)`
-10. `I64(createdAt)`
+3. `S(frameType)`, exactly `session.server_hello`
+4. `S(sessionId)`, repeating the client Hello value
+5. `S(tenantId)`
+6. `S(hostId)`
+7. `S(deviceId)`
+8. `S(direction)`, exactly `windows_to_mobile`
+9. `I64(bindingVersion)`
+10. `I64(keyVersion)`
+11. `B(ephemeralPublicKey)`
+12. `B(nonce)`
+13. `I64(createdAt)`
 
 The host signature transcript is:
 
@@ -364,17 +374,18 @@ Domain: `MYCODEX-ENVELOPE-AAD-V1`
 
 1. `S(domain)`
 2. `I64(protocolVersion)`
-3. `S(sessionId)`
-4. `S(tenantId)`
-5. `S(hostId)`
-6. `S(deviceId)`
-7. `S(direction)`, exactly `windows_to_mobile` or `mobile_to_windows`
-8. `S(kind)`
-9. `S(messageId)`
-10. `U64(sequence)`
-11. `I64(createdAt)`
-12. `S(payloadEncoding)`, exactly `encrypted-json`
-13. `B(nonce)`
+3. `S(frameType)`, exactly `session.envelope`
+4. `S(sessionId)`
+5. `S(tenantId)`
+6. `S(hostId)`
+7. `S(deviceId)`
+8. `S(direction)`, exactly `windows_to_mobile` or `mobile_to_windows`
+9. `S(kind)`
+10. `S(messageId)`
+11. `U64(sequence)`
+12. `I64(createdAt)`
+13. `S(payloadEncoding)`, exactly `encrypted-json`
+14. `B(nonce)`
 
 `ciphertext` is authenticated by AES-GCM and is not appended to its own AAD.
 Version 1 has no envelope `ciphertextLength`, `senderRole`, or `messageType`

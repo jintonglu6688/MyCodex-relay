@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -12,8 +11,6 @@ import (
 	"strconv"
 
 	"github.com/mycodex/mycodex-relay/internal/config"
-	"github.com/mycodex/mycodex-relay/internal/debug"
-	"github.com/mycodex/mycodex-relay/internal/protocol"
 	"github.com/mycodex/mycodex-relay/internal/relay"
 	"github.com/mycodex/mycodex-relay/internal/store"
 	"github.com/mycodex/mycodex-relay/internal/tenant"
@@ -376,61 +373,20 @@ func runTenantPrintConnection(args []string, stdout io.Writer, stderr io.Writer)
 }
 
 func runDebug(args []string, stdout io.Writer, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stdout, "debug commands: host, mobile, auth-header")
-		return 0
+	if len(args) == 0 || args[0] != "auth-header" {
+		fmt.Fprintln(stderr, "debug commands: auth-header")
+		return 2
 	}
-	if args[0] == "auth-header" {
-		flags := newFlagSet("debug auth-header", stderr)
-		token := flags.String("token", "", "bearer token")
-		if err := flags.Parse(args[1:]); err != nil {
-			return 2
-		}
-		if *token == "" {
-			fmt.Fprintln(stderr, "token is required")
-			return 2
-		}
-		fmt.Fprintf(stdout, "Authorization=Bearer %s\n", *token)
-		return 0
-	}
-	flags := newFlagSet("debug "+args[0], stderr)
-	tenantID := flags.String("tenant", "tenant_demo", "tenant id")
-	hostID := flags.String("host", "host_demo", "host id")
-	deviceID := flags.String("device", "device_demo", "device id")
-	value := flags.String("value", "hello", "debug value")
+	flags := newFlagSet("debug auth-header", stderr)
+	token := flags.String("token", "", "bearer token")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
-	envelope := protocol.Envelope{
-		ProtocolVersion: 1,
-		TenantID:        *tenantID,
-		HostID:          *hostID,
-		DeviceID:        *deviceID,
-		SessionID:       "debug_session",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-	}
-	switch args[0] {
-	case "host":
-		envelope.MessageID = "debug-host-pong"
-		envelope.Direction = protocol.DirectionWindowsToMobile
-		envelope.Kind = "rpc.response"
-		envelope.Payload = debug.BuildPongPayload(*value)
-	case "mobile":
-		envelope.MessageID = "debug-mobile-ping"
-		envelope.Direction = protocol.DirectionMobileToWindows
-		envelope.Kind = "rpc.request"
-		envelope.Payload = debug.BuildPingPayload(*value)
-	default:
-		fmt.Fprintf(stderr, "unknown debug command: %s\n", args[0])
+	if *token == "" {
+		fmt.Fprintln(stderr, "token is required")
 		return 2
 	}
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		fmt.Fprintf(stderr, "debug envelope: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, string(data))
+	fmt.Fprintf(stdout, "Authorization=Bearer %s\n", *token)
 	return 0
 }
 

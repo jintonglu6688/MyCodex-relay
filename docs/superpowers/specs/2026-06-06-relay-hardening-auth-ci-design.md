@@ -1,4 +1,6 @@
-# Relay Hardening Auth CI Design
+# Superseded — Relay Hardening Auth CI Design
+
+> Superseded by `E:\MyCodex\docs\superpowers\plans\2026-07-24-encrypted-remote-business-channel.md`. This historical document describes a plaintext Relay protocol and is not an implementation reference.
 
 ## Goal
 

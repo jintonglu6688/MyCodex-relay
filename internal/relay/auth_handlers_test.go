@@ -98,6 +98,18 @@ func TestMetadataUsesStableRelayIdentityAndConfiguredLimits(t *testing.T) {
 	}
 }
 
+func TestMetadataCapsConfiguredMessageLimitAtSecureProtocolMaximum(t *testing.T) {
+	cfg := config.Default()
+	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
+	cfg.DefaultQuota.MaxMessageBytes = 32 * 1024 * 1024
+	server := httptest.NewServer(NewServer(cfg).Handler())
+	defer server.Close()
+	status, body := getJSON(t, server.URL+"/.well-known/mycodex-relay", "")
+	if status != http.StatusOK || !strings.Contains(body, `"maxMessageBytes":11534336`) {
+		t.Fatalf("metadata did not publish protocol cap: status=%d body=%s", status, body)
+	}
+}
+
 func TestHTTPHostEnrollmentAndSignedTicketFlow(t *testing.T) {
 	fixture := newHTTPAuthFixture(t)
 	signingPrivate, agreementPrivate := enrollHTTPHost(t, fixture)
@@ -331,6 +343,7 @@ func TestChallengeLimiterBoundsTrackedSourcesAndCleansExpiredEntries(t *testing.
 
 type httpAuthFixture struct {
 	store        *store.Store
+	relay        *Server
 	server       *httptest.Server
 	tenantID     string
 	tenantSecret string
@@ -351,10 +364,12 @@ func newHTTPAuthFixture(t *testing.T) httpAuthFixture {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	server := httptest.NewServer(NewServerWithStore(cfg, st).Handler())
+	relay := NewServerWithStore(cfg, st)
+	server := httptest.NewServer(relay.Handler())
 	t.Cleanup(server.Close)
 	return httpAuthFixture{
 		store:        st,
+		relay:        relay,
 		server:       server,
 		tenantID:     created.TenantID,
 		tenantSecret: tenantSecret,

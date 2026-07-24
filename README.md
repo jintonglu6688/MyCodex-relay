@@ -39,8 +39,6 @@ go run ./cmd/mycodex-relay tenant enable --config relay-config.json --tenant <te
 go run ./cmd/mycodex-relay tenant rotate-secret --config relay-config.json --tenant <tenantId>
 go run ./cmd/mycodex-relay tenant print-connection --config relay-config.json --tenant <tenantId>
 go run ./cmd/mycodex-relay serve --config relay-config.json
-go run ./cmd/mycodex-relay debug mobile --tenant tenant_demo --host host_demo --device device_demo --value hello
-go run ./cmd/mycodex-relay debug host --tenant tenant_demo --host host_demo --device device_demo --value hello
 go run ./cmd/mycodex-relay debug auth-header --token <tenant-or-device-token>
 ```
 
@@ -52,7 +50,8 @@ Authenticated WebSocket sessions use an HTTP header:
 Authorization: Bearer <tenant-or-device-token>
 ```
 
-Host sessions use the tenant secret. Device sessions use the token returned by pairing approval.
+Both host and device sessions use the one-time, purpose-bound ticket returned by
+the challenge/proof flow. Bearer values never appear in the WebSocket query.
 
 ## HTTP API
 

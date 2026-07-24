@@ -52,13 +52,17 @@ func TestRelayChallengeTranscriptIncludesLockedScopeInOrder(t *testing.T) {
 }
 
 func TestSessionHelloTranscriptMatchesLockedDTOOrder(t *testing.T) {
-	clientKey := vectorPrivateKey(t, 5)
+	clientKey := vectorPrivateKey(t, 7)
+	sessionID := vectorB64(vectorBytes(0xc0, 32))
 	want := vectorTranscript(
 		"MYCODEX-SESSION-HELLO-V1",
 		int64(1),
+		"session.client_hello",
+		sessionID,
 		"11111111-1111-1111-1111-111111111111",
 		"22222222-2222-2222-2222-222222222222",
 		"33333333-3333-3333-3333-333333333333",
+		"mobile_to_windows",
 		int64(1),
 		int64(1),
 		elliptic.Marshal(elliptic.P256(), clientKey.X, clientKey.Y),
@@ -72,13 +76,17 @@ func TestSessionHelloTranscriptMatchesLockedDTOOrder(t *testing.T) {
 }
 
 func TestSessionServerHelloRepeatsLockedDTOFields(t *testing.T) {
-	clientKey := vectorPrivateKey(t, 5)
+	clientKey := vectorPrivateKey(t, 7)
+	sessionID := vectorB64(vectorBytes(0xc0, 32))
 	clientHello := vectorTranscript(
 		"MYCODEX-SESSION-HELLO-V1",
 		int64(1),
+		"session.client_hello",
+		sessionID,
 		"11111111-1111-1111-1111-111111111111",
 		"22222222-2222-2222-2222-222222222222",
 		"33333333-3333-3333-3333-333333333333",
+		"mobile_to_windows",
 		int64(1),
 		int64(1),
 		elliptic.Marshal(elliptic.P256(), clientKey.X, clientKey.Y),
@@ -90,9 +98,12 @@ func TestSessionServerHelloRepeatsLockedDTOFields(t *testing.T) {
 	serverHello := vectorTranscript(
 		"MYCODEX-SESSION-HELLO-V1",
 		int64(1),
+		"session.server_hello",
+		sessionID,
 		"11111111-1111-1111-1111-111111111111",
 		"22222222-2222-2222-2222-222222222222",
 		"33333333-3333-3333-3333-333333333333",
+		"windows_to_mobile",
 		int64(1),
 		int64(1),
 		elliptic.Marshal(elliptic.P256(), serverKey.X, serverKey.Y),
@@ -110,11 +121,13 @@ func TestSessionServerHelloRepeatsLockedDTOFields(t *testing.T) {
 
 func TestEnvelopeAADMatchesLockedDTOOrder(t *testing.T) {
 	vector := generateSecureRemoteVector(t)
-	nonce := vectorDecodeB64(t, vector.Envelope["nonce"].(string))
+	nonce := vectorDecodeB64(t, vector.Envelopes["androidToWindows"].(map[string]any)["nonce"].(string))
+	sessionID := vector.Inputs["ids"].(map[string]string)["sessionId"]
 	want := vectorTranscript(
 		"MYCODEX-ENVELOPE-AAD-V1",
 		int64(1),
-		"88888888-8888-8888-8888-888888888888",
+		"session.envelope",
+		sessionID,
 		"11111111-1111-1111-1111-111111111111",
 		"22222222-2222-2222-2222-222222222222",
 		"33333333-3333-3333-3333-333333333333",
@@ -126,9 +139,17 @@ func TestEnvelopeAADMatchesLockedDTOOrder(t *testing.T) {
 		"encrypted-json",
 		nonce,
 	)
-	got := vectorDecodeB64(t, vector.Transcripts["envelopeAAD"].(string))
+	got := vectorDecodeB64(t, vector.Transcripts["envelopeAadAndroidToWindows"].(string))
 	if !bytes.Equal(got, want) {
 		t.Fatalf("envelope AAD does not match locked SecureEnvelope fields")
+	}
+}
+
+func TestLeadingZeroECDHVectorIsFixedWidth(t *testing.T) {
+	vector := generateSecureRemoteVector(t)
+	got := vectorDecodeB64(t, vector.LeadingZeroECDH["sharedSecret"].(string))
+	if len(got) != 32 || got[0] != 0 || hex.EncodeToString(got) != "0075ba8d3430495fc689e1024b48e48f4ec4d2eda5d5b8f8ad7637dabf065df3" {
+		t.Fatalf("leading-zero ECDH = %x", got)
 	}
 }
 
@@ -178,7 +199,8 @@ type secureRemoteVector struct {
 	Signatures      map[string]any `json:"signatures"`
 	Pairing         map[string]any `json:"pairing"`
 	Session         map[string]any `json:"session"`
-	Envelope        map[string]any `json:"envelope"`
+	Envelopes       map[string]any `json:"envelopes"`
+	LeadingZeroECDH map[string]any `json:"leadingZeroEcdh"`
 }
 
 func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
@@ -192,7 +214,6 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 		claimID     = "55555555-5555-5555-5555-555555555555"
 		challengeID = "66666666-6666-6666-6666-666666666666"
 		bindingID   = "77777777-7777-7777-7777-777777777777"
-		sessionID   = "88888888-8888-8888-8888-888888888888"
 		messageID   = "99999999-9999-9999-9999-999999999999"
 		relayURL    = "https://relay.example.com"
 	)
@@ -213,6 +234,7 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 		"hostAgreement":          vectorPrivateKey(t, 3),
 		"deviceSigning":          vectorPrivateKey(t, 4),
 		"deviceAgreement":        vectorPrivateKey(t, 5),
+		"sessionClientEphemeral": vectorPrivateKey(t, 7),
 		"sessionServerEphemeral": vectorPrivateKey(t, 6),
 	}
 	public := func(name string) []byte {
@@ -367,14 +389,18 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 	)
 	deviceProofSignature := vectorSign(t, keys["deviceSigning"], relayProofTranscript)
 
-	sessionClientPublic := public("deviceAgreement")
+	sessionID := vectorB64(vectorBytes(0xc0, 32))
+	sessionClientPublic := public("sessionClientEphemeral")
 	sessionServerPublic := public("sessionServerEphemeral")
 	sessionClientHelloTranscript := vectorTranscript(
 		"MYCODEX-SESSION-HELLO-V1",
 		int64(1),
+		"session.client_hello",
+		sessionID,
 		tenantID,
 		hostID,
 		deviceID,
+		"mobile_to_windows",
 		int64(1),
 		int64(1),
 		sessionClientPublic,
@@ -385,9 +411,12 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 	sessionServerHelloUnsigned := vectorTranscript(
 		"MYCODEX-SESSION-HELLO-V1",
 		int64(1),
+		"session.server_hello",
+		sessionID,
 		tenantID,
 		hostID,
 		deviceID,
+		"windows_to_mobile",
 		int64(1),
 		int64(1),
 		sessionServerPublic,
@@ -401,7 +430,7 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 	sessionCompleteTranscript := append([]byte{}, sessionServerHelloTranscript...)
 	sessionCompleteTranscript = AppendField(sessionCompleteTranscript, sessionServerSignature)
 
-	sessionSharedSecret := vectorECDH(t, keys["deviceAgreement"], &keys["sessionServerEphemeral"].PublicKey)
+	sessionSharedSecret := vectorECDH(t, keys["sessionClientEphemeral"], &keys["sessionServerEphemeral"].PublicKey)
 	sessionSaltInput := append([]byte{}, sessionClientNonce...)
 	sessionSaltInput = append(sessionSaltInput, sessionServerNonce...)
 	sessionSaltDigest := sha256.Sum256(sessionSaltInput)
@@ -428,12 +457,13 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 	windowsConfirmMAC.Write(windowsConfirmTranscript)
 	windowsConfirm := windowsConfirmMAC.Sum(nil)
 
-	envelopePlaintext := []byte(`{"type":"remote/ping","value":"hello secure remote"}`)
-	envelopeNonce := append([]byte{}, androidNoncePrefix...)
-	envelopeNonce = appendUint64(envelopeNonce, 1)
-	envelopeAAD := vectorTranscript(
+	androidPlaintext := []byte(`{"schemaVersion":1,"payloadType":"remote.command","requestId":"request_demo","deviceId":"33333333-3333-3333-3333-333333333333","commandType":"test","payload":{}}`)
+	androidNonce := append([]byte{}, androidNoncePrefix...)
+	androidNonce = appendUint64(androidNonce, 1)
+	androidAAD := vectorTranscript(
 		"MYCODEX-ENVELOPE-AAD-V1",
 		int64(1),
+		"session.envelope",
 		sessionID,
 		tenantID,
 		hostID,
@@ -444,9 +474,15 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 		uint64(1),
 		messageAt,
 		"encrypted-json",
-		envelopeNonce,
+		androidNonce,
 	)
-	envelopeCiphertext := vectorAESGCM(t, androidToWindowsKey, envelopeNonce, envelopePlaintext, envelopeAAD)
+	androidCiphertext := vectorAESGCM(t, androidToWindowsKey, androidNonce, androidPlaintext, androidAAD)
+	windowsPlaintext := []byte(`{"schemaVersion":1,"payloadType":"remote.response","requestId":"request_demo","deviceId":"33333333-3333-3333-3333-333333333333","result":{}}`)
+	windowsNonce := append([]byte{}, windowsNoncePrefix...)
+	windowsNonce = appendUint64(windowsNonce, 1)
+	windowsAAD := vectorTranscript("MYCODEX-ENVELOPE-AAD-V1", int64(1), "session.envelope", sessionID, tenantID, hostID, deviceID, "windows_to_mobile", "rpc.response", "response_demo", uint64(1), messageAt, "encrypted-json", windowsNonce)
+	windowsCiphertext := vectorAESGCM(t, windowsToAndroidKey, windowsNonce, windowsPlaintext, windowsAAD)
+	leadingZero := vectorECDH(t, vectorPrivateKey(t, 92), &keys["sessionServerEphemeral"].PublicKey)
 
 	return secureRemoteVector{
 		ProtocolVersion: 1,
@@ -457,21 +493,18 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 				"hostAgreement":          "3",
 				"deviceSigning":          "4",
 				"deviceAgreement":        "5",
-				"sessionClientEphemeral": "5",
+				"sessionClientEphemeral": "7",
 				"sessionServerEphemeral": "6",
 			},
 			"strings": map[string]string{
-				"relayUrl":              relayURL,
-				"hostName":              "Demo Windows Host",
-				"deviceName":            "Demo Android Device",
-				"platform":              "android",
-				"appVersion":            "1.0.0",
-				"approvalStatus":        "approved",
-				"challengePurpose":      "websocket_device",
-				"direction":             "mobile_to_windows",
-				"kind":                  "rpc.request",
-				"payloadEncoding":       "encrypted-json",
-				"envelopePlaintextUtf8": string(envelopePlaintext),
+				"relayUrl":         relayURL,
+				"hostName":         "Demo Windows Host",
+				"deviceName":       "Demo Android Device",
+				"platform":         "android",
+				"appVersion":       "1.0.0",
+				"approvalStatus":   "approved",
+				"challengePurpose": "websocket_device",
+				"payloadEncoding":  "encrypted-json",
 			},
 			"inviteSecretHex":       hex.EncodeToString(inviteSecret),
 			"clientNonceHex":        hex.EncodeToString(clientNonce),
@@ -503,21 +536,22 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 			"relayFingerprintSha256": vectorB64(relayFingerprint),
 		},
 		Transcripts: map[string]any{
-			"pairingPackage":             vectorB64(pairingPackageTranscript),
-			"visibleClaimHeader":         vectorB64(visibleClaimHeader),
-			"pairingClaimWithoutProof":   vectorB64(claimTranscriptWithoutProof),
-			"pairingClaimForSignature":   vectorB64(claimTranscriptForSignature),
-			"pairingApproval":            vectorB64(approvalTranscript),
-			"approvalHeader":             vectorB64(approvalHeader),
-			"relayChallenge":             vectorB64(relayChallengeTranscript),
-			"relayProof":                 vectorB64(relayProofTranscript),
-			"sessionClientHello":         vectorB64(sessionClientHelloTranscript),
-			"sessionServerHelloUnsigned": vectorB64(sessionServerHelloUnsigned),
-			"sessionServerHello":         vectorB64(sessionServerHelloTranscript),
-			"sessionComplete":            vectorB64(sessionCompleteTranscript),
-			"sessionConfirmAndroid":      vectorB64(androidConfirmTranscript),
-			"sessionConfirmWindows":      vectorB64(windowsConfirmTranscript),
-			"envelopeAAD":                vectorB64(envelopeAAD),
+			"pairingPackage":              vectorB64(pairingPackageTranscript),
+			"visibleClaimHeader":          vectorB64(visibleClaimHeader),
+			"pairingClaimWithoutProof":    vectorB64(claimTranscriptWithoutProof),
+			"pairingClaimForSignature":    vectorB64(claimTranscriptForSignature),
+			"pairingApproval":             vectorB64(approvalTranscript),
+			"approvalHeader":              vectorB64(approvalHeader),
+			"relayChallenge":              vectorB64(relayChallengeTranscript),
+			"relayProof":                  vectorB64(relayProofTranscript),
+			"sessionClientHello":          vectorB64(sessionClientHelloTranscript),
+			"sessionServerHelloUnsigned":  vectorB64(sessionServerHelloUnsigned),
+			"sessionServerHello":          vectorB64(sessionServerHelloTranscript),
+			"sessionComplete":             vectorB64(sessionCompleteTranscript),
+			"sessionConfirmAndroid":       vectorB64(androidConfirmTranscript),
+			"sessionConfirmWindows":       vectorB64(windowsConfirmTranscript),
+			"envelopeAadAndroidToWindows": vectorB64(androidAAD),
+			"envelopeAadWindowsToAndroid": vectorB64(windowsAAD),
 		},
 		Signatures: map[string]any{
 			"hostPairingPackage":  vectorB64(hostPackageSignature),
@@ -554,12 +588,11 @@ func generateSecureRemoteVector(t *testing.T) secureRemoteVector {
 			"androidConfirmation":         vectorB64(androidConfirm),
 			"windowsConfirmation":         vectorB64(windowsConfirm),
 		},
-		Envelope: map[string]any{
-			"sequence":   1,
-			"nonce":      vectorB64(envelopeNonce),
-			"plaintext":  vectorB64(envelopePlaintext),
-			"ciphertext": vectorB64(envelopeCiphertext),
+		Envelopes: map[string]any{
+			"androidToWindows": map[string]any{"frameType": "session.envelope", "direction": "mobile_to_windows", "kind": "rpc.request", "messageId": messageID, "sequence": 1, "createdAt": messageAt, "payloadEncoding": "encrypted-json", "nonce": vectorB64(androidNonce), "plaintext": vectorB64(androidPlaintext), "ciphertext": vectorB64(androidCiphertext)},
+			"windowsToAndroid": map[string]any{"frameType": "session.envelope", "direction": "windows_to_mobile", "kind": "rpc.response", "messageId": "response_demo", "sequence": 1, "createdAt": messageAt, "payloadEncoding": "encrypted-json", "nonce": vectorB64(windowsNonce), "plaintext": vectorB64(windowsPlaintext), "ciphertext": vectorB64(windowsCiphertext)},
 		},
+		LeadingZeroECDH: map[string]any{"privateScalar": "92", "peerPrivateScalar": "6", "sharedSecret": vectorB64(leadingZero)},
 	}
 }
 

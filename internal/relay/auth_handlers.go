@@ -43,8 +43,8 @@ func (s *Server) handleMetadata(w http.ResponseWriter, r *http.Request) {
 		"signingPublicKey":      identity.PublicKeyBase64URL,
 		"signingKeyFingerprint": identity.FingerprintBase64URL,
 		"serverTime":            time.Now().UTC().UnixMilli(),
-		"maxRequestBytes":       s.config.DefaultQuota.MaxMessageBytes,
-		"maxMessageBytes":       s.config.DefaultQuota.MaxMessageBytes,
+		"maxRequestBytes":       protocol.EffectiveMessageBytes(s.config.DefaultQuota.MaxMessageBytes),
+		"maxMessageBytes":       protocol.EffectiveMessageBytes(s.config.DefaultQuota.MaxMessageBytes),
 	})
 }
 

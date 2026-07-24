@@ -299,11 +299,10 @@ func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	if err := pairing.NewService(s.store).RevokeDevice(tenantID, hostID, deviceID); err != nil {
+	if err := s.revokeDevice(tenantID, hostID, deviceID); err != nil {
 		writePairingError(w, err)
 		return
 	}
-	s.disconnectDevice(tenantID, hostID, deviceID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenantId": tenantID,
 		"hostId":   hostID,

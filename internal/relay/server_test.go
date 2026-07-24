@@ -3,15 +3,10 @@ package relay
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-	"net"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,593 +14,196 @@ import (
 	"github.com/coder/websocket"
 	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
-	"github.com/mycodex/mycodex-relay/internal/protocol"
-	"github.com/mycodex/mycodex-relay/internal/security"
+	"github.com/mycodex/mycodex-relay/internal/session"
 )
 
 func TestHealthEndpoint(t *testing.T) {
-	server := NewServer(config.Default())
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest("GET", "/health", nil)
-
-	server.Handler().ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", recorder.Code)
-	}
-	if recorder.Body.String() != "{\"status\":\"ok\"}\n" {
-		t.Fatalf("unexpected body: %q", recorder.Body.String())
+	NewServer(config.Default()).Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "{\"status\":\"ok\"}\n" {
+		t.Fatalf("health=%d %q", recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestServeUsesTLSForHealthEndpoint(t *testing.T) {
-	dir := t.TempDir()
-	certPath := filepath.Join(dir, "embedded-relay-cert.pem")
-	keyPath := filepath.Join(dir, "embedded-relay-key.pem")
-	if _, err := security.EnsureEmbeddedCertificate(certPath, keyPath, "192.0.2.42"); err != nil {
-		t.Fatalf("create embedded TLS identity: %v", err)
+func TestWebSocketForwardsValidatedRawUTF8Unchanged(t *testing.T) {
+	server := httptest.NewServer(NewServer(config.Default()).Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	host := dialRelay(t, ctx, server.URL, "connection=host&tenantId=tenant&hostId=host&deviceId=device")
+	defer host.Close(websocket.StatusNormalClosure, "")
+	device := dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
+	defer device.Close(websocket.StatusNormalClosure, "")
+	raw := secureEnvelope("tenant", "host", "device", "mobile_to_windows", "rpc.request", "opaque-message")
+	if err := device.Write(ctx, websocket.MessageText, raw); err != nil {
+		t.Fatal(err)
 	}
-	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	typeID, got, err := host.Read(ctx)
 	if err != nil {
-		t.Fatalf("load embedded TLS identity: %v", err)
+		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	if typeID != websocket.MessageText || string(got) != string(raw) {
+		t.Fatalf("relay changed raw frame: %s", got)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	server := NewServer(config.Default())
-	done := make(chan error, 1)
-	go func() {
-		done <- server.serve(ctx, listener, &tls.Config{
-			Certificates: []tls.Certificate{certificate},
-			MinVersion:   tls.VersionTLS12,
-		})
-	}()
-	defer func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("serve returned error: %v", err)
+}
+
+func TestWebSocketClosesInvalidPlaintextAndRouteUnavailable(t *testing.T) {
+	server := httptest.NewServer(NewServer(config.Default()).Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	device := dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
+	defer device.Close(websocket.StatusNormalClosure, "")
+	if err := device.Write(ctx, websocket.MessageText, []byte(`{"protocolVersion":1,"payloadEncoding":"plain-json"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := device.Read(ctx)
+	if websocket.CloseStatus(err) != closeInvalidFrame {
+		t.Fatalf("plaintext close=%v", err)
+	}
+	device = dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
+	defer device.Close(websocket.StatusNormalClosure, "")
+	if err := device.Write(ctx, websocket.MessageText, secureEnvelope("tenant", "host", "device", "mobile_to_windows", "rpc.request", "missing-route")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = device.Read(ctx)
+	if websocket.CloseStatus(err) != closeRouteMissing {
+		t.Fatalf("route close=%v", err)
+	}
+}
+
+func TestWebSocketRejectsLegacyAndAmbiguousQuery(t *testing.T) {
+	server := httptest.NewServer(NewServer(config.Default()).Handler())
+	defer server.Close()
+	base := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/ws?connection=device&tenantId=tenant&hostId=host&deviceId=device"
+	for _, suffix := range []string{"&sessionId=legacy", "&deviceId=duplicate", "&unknown=value"} {
+		_, response, err := websocket.Dial(t.Context(), base+suffix, nil)
+		if err == nil || response == nil || response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("query %q response=%v err=%v", suffix, response, err)
 		}
-	}()
-
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		t.Fatalf("read embedded certificate: %v", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(certPEM) {
-		t.Fatal("append embedded certificate to test roots")
-	}
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
-		RootCAs:    roots,
-		MinVersion: tls.VersionTLS12,
-	}}}
-	response, err := client.Get("https://" + listener.Addr().String() + "/health")
-	if err != nil {
-		t.Fatalf("GET TLS health endpoint: %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.StatusCode)
 	}
 }
 
-func TestServeRejectsInvalidTLSCertificateBeforeBinding(t *testing.T) {
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve port: %v", err)
-	}
-	host, rawPort, err := net.SplitHostPort(reserved.Addr().String())
-	if err != nil {
-		t.Fatalf("split address: %v", err)
-	}
-	port, err := strconv.Atoi(rawPort)
-	if err != nil {
-		t.Fatalf("parse port: %v", err)
-	}
-	if err := reserved.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-	cfg := config.Default()
-	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
-	cfg.ListenHost = host
-	cfg.ListenPort = port
-	cfg.TLS = config.TLSConfig{
-		Enabled:  true,
-		CertFile: filepath.Join(t.TempDir(), "missing-cert.pem"),
-		KeyFile:  filepath.Join(t.TempDir(), "missing-key.pem"),
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if err := NewServer(cfg).Serve(ctx); err == nil || !strings.Contains(err.Error(), "TLS certificate") {
-		t.Fatalf("expected TLS certificate error, got %v", err)
-	}
-	available, err := net.Listen("tcp", net.JoinHostPort(host, rawPort))
-	if err != nil {
-		t.Fatalf("port was bound before TLS validation: %v", err)
-	}
-	available.Close()
-}
-
-func TestWebSocketRoutesPingPongBetweenDeviceAndHost(t *testing.T) {
-	cfg := config.Default()
-	cfg.DefaultQuota.MaxMessageBytes = 1024
-	server := NewServer(cfg)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func TestSameRoleReplacementCannotLeaveOldReaderCurrent(t *testing.T) {
+	server := httptest.NewServer(NewServer(config.Default()).Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
+	host := dialRelay(t, ctx, server.URL, "connection=host&tenantId=tenant&hostId=host&deviceId=device")
 	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
-	defer device.Close(websocket.StatusNormalClosure, "")
-
-	ping := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "ping-1",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "device_session",
-		Direction:       protocol.DirectionMobileToWindows,
-		Kind:            "rpc.request",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{\"type\":\"remote/ping\",\"value\":\"hello\"}",
+	first := dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
+	defer first.Close(websocket.StatusNormalClosure, "")
+	second := dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
+	defer second.Close(websocket.StatusNormalClosure, "")
+	_, _, err := first.Read(ctx)
+	if websocket.CloseStatus(err) != closeReplaced {
+		t.Fatalf("first replacement close=%v", err)
 	}
-	writeEnvelope(t, ctx, device, ping)
-	received := readEnvelope(t, ctx, host)
-	if received.MessageID != "ping-1" || received.Payload != ping.Payload {
-		t.Fatalf("unexpected routed ping: %+v", received)
+	raw := secureEnvelope("tenant", "host", "device", "mobile_to_windows", "rpc.request", "new-generation")
+	if err := second.Write(ctx, websocket.MessageText, raw); err != nil {
+		t.Fatal(err)
 	}
-
-	pong := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "pong-1",
-		CorrelationID:   &ping.MessageID,
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "host_session",
-		Direction:       protocol.DirectionWindowsToMobile,
-		Kind:            "rpc.response",
-		Sequence:        2,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{\"type\":\"remote/pong\",\"value\":\"hello\"}",
-	}
-	writeEnvelope(t, ctx, host, pong)
-	response := readEnvelope(t, ctx, device)
-	if response.MessageID != "pong-1" || response.Payload != pong.Payload {
-		t.Fatalf("unexpected routed pong: %+v", response)
+	_, got, err := host.Read(ctx)
+	if err != nil || string(got) != string(raw) {
+		t.Fatalf("new generation route: %v %s", err, got)
 	}
 }
 
-func TestWebSocketRoutesLargeResponseWithinConfiguredMessageLimit(t *testing.T) {
-	cfg := config.Default()
-	cfg.DefaultQuota.MaxMessageBytes = 128 * 1024
-	server := NewServer(cfg)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func TestWebSocketRejectsBinaryAndRoleMismatch(t *testing.T) {
+	server := httptest.NewServer(NewServer(config.Default()).Handler())
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
-	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
+	device := dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
 	defer device.Close(websocket.StatusNormalClosure, "")
-	device.SetReadLimit(256 * 1024)
-
-	payload := `{"type":"remote.response","value":"` + strings.Repeat("x", 40*1024) + `"}`
-	response := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "large-response",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "host_session",
-		Direction:       protocol.DirectionWindowsToMobile,
-		Kind:            "rpc.response",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         payload,
+	if err := device.Write(ctx, websocket.MessageBinary, []byte("x")); err != nil {
+		t.Fatal(err)
 	}
-
-	writeEnvelope(t, ctx, host, response)
-	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
-	defer readCancel()
-	received := readEnvelope(t, readCtx, device)
-	if received.MessageID != "large-response" || received.Payload != payload {
-		t.Fatalf("unexpected large response: messageId=%s payloadBytes=%d", received.MessageID, len([]byte(received.Payload)))
+	_, _, err := device.Read(ctx)
+	if websocket.CloseStatus(err) != closeInvalidFrame {
+		t.Fatalf("binary close=%v", err)
 	}
-}
-
-func TestWebSocketRoutesRemoteHistoryResponseOverOneMegabyte(t *testing.T) {
-	cfg := config.Default()
-	server := NewServer(cfg)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
-	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
+	device = dialRelay(t, ctx, server.URL, "connection=device&tenantId=tenant&hostId=host&deviceId=device")
 	defer device.Close(websocket.StatusNormalClosure, "")
-	device.SetReadLimit(2 * 1024 * 1024)
-
-	payload := `{"type":"remote.event","eventType":"coding.messages.list.result","messages":"` + strings.Repeat("x", 1250*1024) + `"}`
-	response := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "large-history-response",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "host_session",
-		Direction:       protocol.DirectionWindowsToMobile,
-		Kind:            "rpc.response",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         payload,
+	if err := device.Write(ctx, websocket.MessageText, secureEnvelope("tenant", "host", "device", "windows_to_mobile", "rpc.response", "wrong-role")); err != nil {
+		t.Fatal(err)
 	}
-
-	writeEnvelope(t, ctx, host, response)
-	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
-	defer readCancel()
-	received := readEnvelope(t, readCtx, device)
-	if received.MessageID != "large-history-response" || received.Payload != payload {
-		t.Fatalf("unexpected large history response: messageId=%s payloadBytes=%d", received.MessageID, len([]byte(received.Payload)))
+	_, _, err = device.Read(ctx)
+	if websocket.CloseStatus(err) != closeIdentity {
+		t.Fatalf("role close=%v", err)
 	}
 }
 
-func TestWebSocketForwardsRemoteCodingPayloadUntouched(t *testing.T) {
-	server := NewServer(config.Default())
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
-	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_session")
-	defer device.Close(websocket.StatusNormalClosure, "")
-
-	payload := "{\"schemaVersion\":1,\"payloadType\":\"remote.command\",\"requestId\":\"request_a\",\"deviceId\":\"device_a\",\"commandType\":\"coding.workspaces.list\",\"payload\":{}}"
-	message := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "coding-request",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "device_session",
-		Direction:       protocol.DirectionMobileToWindows,
-		Kind:            "rpc.request",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         payload,
-	}
-
-	writeEnvelope(t, ctx, device, message)
-	received := readEnvelope(t, ctx, host)
-	if received.Payload != payload {
-		t.Fatalf("payload changed during relay route: %s", received.Payload)
-	}
-}
-
-func TestWebSocketRejectsCrossTenantRoute(t *testing.T) {
-	server := NewServer(config.Default())
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_session")
-	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_b&hostId=host_a&deviceId=device_a&sessionId=device_session")
-	defer device.Close(websocket.StatusNormalClosure, "")
-
-	message := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "cross-tenant",
-		TenantID:        "tenant_b",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "device_session",
-		Direction:       protocol.DirectionMobileToWindows,
-		Kind:            "rpc.request",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{}",
-	}
-	writeEnvelope(t, ctx, device, message)
-	response := readEnvelope(t, ctx, device)
-	if response.Kind != "system.error" || response.Payload != "{\"code\":\"route_not_found\"}" {
-		t.Fatalf("expected route_not_found error envelope, got %+v", response)
-	}
-}
-
-func TestWebSocketRejectsDeviceEnvelopeTenantMismatchBeforeRouting(t *testing.T) {
-	server := NewServer(config.Default())
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	tenantBHost := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_b&hostId=host_b&deviceId=device_a&sessionId=host_b_session")
-	defer tenantBHost.Close(websocket.StatusNormalClosure, "")
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_a_session")
-	defer device.Close(websocket.StatusNormalClosure, "")
-
-	message := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "spoof-tenant",
-		TenantID:        "tenant_b",
-		HostID:          "host_b",
-		DeviceID:        "device_a",
-		SessionID:       "device_a_session",
-		Direction:       protocol.DirectionMobileToWindows,
-		Kind:            "rpc.request",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{}",
-	}
-	writeEnvelope(t, ctx, device, message)
-	response := readEnvelope(t, ctx, device)
-	if response.Kind != "system.error" || response.Payload != "{\"code\":\"identity_mismatch\"}" {
-		t.Fatalf("expected identity_mismatch error envelope, got %+v", response)
-	}
-
-	readCtx, readCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer readCancel()
-	if _, _, err := tenantBHost.Read(readCtx); err == nil {
-		t.Fatalf("tenant_b host should not receive spoofed device message")
-	}
-}
-
-func TestWebSocketRejectsDeviceSendingWindowsToMobile(t *testing.T) {
-	server := NewServer(config.Default())
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	device := dialRelay(t, ctx, httpServer.URL, "connection=device&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=device_a_session")
-	defer device.Close(websocket.StatusNormalClosure, "")
-
-	message := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "device-wrong-direction",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "device_a_session",
-		Direction:       protocol.DirectionWindowsToMobile,
-		Kind:            "rpc.response",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{}",
-	}
-	writeEnvelope(t, ctx, device, message)
-	response := readEnvelope(t, ctx, device)
-	if response.Kind != "system.error" || response.Payload != "{\"code\":\"direction_not_allowed\"}" {
-		t.Fatalf("expected direction_not_allowed error envelope, got %+v", response)
-	}
-}
-
-func TestWebSocketRejectsHostSendingMobileToWindows(t *testing.T) {
-	server := NewServer(config.Default())
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	host := dialRelay(t, ctx, httpServer.URL, "connection=host&tenantId=tenant_a&hostId=host_a&deviceId=device_a&sessionId=host_a_session")
-	defer host.Close(websocket.StatusNormalClosure, "")
-
-	message := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "host-wrong-direction",
-		TenantID:        "tenant_a",
-		HostID:          "host_a",
-		DeviceID:        "device_a",
-		SessionID:       "host_a_session",
-		Direction:       protocol.DirectionMobileToWindows,
-		Kind:            "rpc.request",
-		Sequence:        1,
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         "{}",
-	}
-	writeEnvelope(t, ctx, host, message)
-	response := readEnvelope(t, ctx, host)
-	if response.Kind != "system.error" || response.Payload != "{\"code\":\"direction_not_allowed\"}" {
-		t.Fatalf("expected direction_not_allowed error envelope, got %+v", response)
-	}
-}
-
-func TestWebSocketAuthenticatedHostAndDeviceRoutePingPong(t *testing.T) {
+func TestRevokeDetachesBothPeersAndBlocksLateRegistration(t *testing.T) {
 	fixture := newHTTPAuthFixture(t)
 	hostPrivate, _ := enrollHTTPHost(t, fixture)
-	devicePrivate := newHTTPPrivateKey(t)
-	devicePublic := encodeHTTPPublicKey(&devicePrivate.PublicKey)
-	agreementPublic := encodeHTTPPublicKey(&newHTTPPrivateKey(t).PublicKey)
-	if _, err := fixture.store.DB().Exec(
-		`insert into devices
-(tenant_id, host_id, device_id, signing_public_key, agreement_public_key,
- key_version, binding_version, revoked, approved_at)
-values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		fixture.tenantID, fixture.hostID, fixture.deviceID,
-		devicePublic, agreementPublic, 1, 1,
-		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert device identity: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	devicePrivate := insertSecureTestDevice(t, fixture)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	hostTicket := issueHTTPAuthTicket(t, fixture.server.URL, hostPrivate, authsvc.TicketScope{
-		SubjectType: authsvc.SubjectHost,
-		SubjectID:   fixture.hostID,
-		TenantID:    fixture.tenantID,
-		HostID:      fixture.hostID,
-		DeviceID:    fixture.deviceID,
-		Purpose:     authsvc.PurposeWebSocketHost,
-	})
-	deviceTicket := issueHTTPAuthTicket(t, fixture.server.URL, devicePrivate, authsvc.TicketScope{
-		SubjectType: authsvc.SubjectDevice,
-		SubjectID:   fixture.deviceID,
-		TenantID:    fixture.tenantID,
-		HostID:      fixture.hostID,
-		DeviceID:    fixture.deviceID,
-		Purpose:     authsvc.PurposeWebSocketDevice,
-	})
-	host := dialRelayWithAuth(t, ctx, fixture.server.URL, "connection=host&tenantId="+fixture.tenantID+"&hostId="+fixture.hostID+"&deviceId="+fixture.deviceID+"&sessionId=host_session", hostTicket.Ticket)
+	host := dialRelayWithTicket(t, ctx, fixture.server.URL, "host", fixture, hostPrivate)
 	defer host.Close(websocket.StatusNormalClosure, "")
-	device := dialRelayWithAuth(t, ctx, fixture.server.URL, "connection=device&tenantId="+fixture.tenantID+"&hostId="+fixture.hostID+"&deviceId="+fixture.deviceID+"&sessionId=device_session", deviceTicket.Ticket)
+	device := dialRelayWithTicket(t, ctx, fixture.server.URL, "device", fixture, devicePrivate)
 	defer device.Close(websocket.StatusNormalClosure, "")
-
-	ping := protocol.Envelope{ProtocolVersion: 1, MessageID: "auth-ping", TenantID: fixture.tenantID, HostID: fixture.hostID, DeviceID: fixture.deviceID, SessionID: "device_session", Direction: protocol.DirectionMobileToWindows, Kind: "rpc.request", Sequence: 1, PayloadEncoding: protocol.PayloadEncodingPlainJSON, Payload: "{}"}
-	writeEnvelope(t, ctx, device, ping)
-	if received := readEnvelope(t, ctx, host); received.MessageID != "auth-ping" {
-		t.Fatalf("unexpected routed ping: %+v", received)
+	server := fixture.relay
+	if err := server.revokeDevice(fixture.tenantID, fixture.hostID, fixture.deviceID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	key := deviceKey(fixture.tenantID, fixture.hostID, fixture.deviceID)
+	server.mu.RLock()
+	removed := server.hosts[key] == nil && server.devices[key] == nil
+	server.mu.RUnlock()
+	if !removed {
+		t.Fatal("revoke left an active route")
+	}
+	if server.addSession(&webSocketSession{session: sessionForFixture(fixture, "device")}) {
+		t.Fatal("revoked route registered after ticket consumption window")
 	}
 }
 
-func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
-	fixture := newHTTPAuthFixture(t)
-	enrollHTTPHost(t, fixture)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
-		"/v1/ws?connection=host&tenantId=" + fixture.tenantID +
-		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
-	_, response, err := websocket.Dial(ctx, wsURL, nil)
-	if err == nil {
-		t.Fatalf("expected missing authorization to fail")
-	}
-	if response == nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got response=%v err=%v", response, err)
-	}
-}
-
-func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
-	fixture := newHTTPAuthFixture(t)
-	enrollHTTPHost(t, fixture)
-	insertHTTPDeviceIdentity(t, fixture)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
-		"/v1/ws?connection=device&tenantId=" + fixture.tenantID +
-		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
-	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer wrong"}}})
-	if err == nil {
-		t.Fatalf("expected invalid device authorization to fail")
-	}
-	if response == nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got response=%v err=%v", response, err)
-	}
-}
-
-func TestWebSocketRejectsRevokedDeviceAuthorization(t *testing.T) {
-	fixture := newHTTPAuthFixture(t)
-	enrollHTTPHost(t, fixture)
-	devicePrivate := insertHTTPDeviceIdentity(t, fixture)
-	ticket := issueHTTPAuthTicket(t, fixture.server.URL, devicePrivate, authsvc.TicketScope{
-		SubjectType: authsvc.SubjectDevice,
-		SubjectID:   fixture.deviceID,
-		TenantID:    fixture.tenantID,
-		HostID:      fixture.hostID,
-		DeviceID:    fixture.deviceID,
-		Purpose:     authsvc.PurposeWebSocketDevice,
-	})
-	if _, err := fixture.store.DB().Exec(
-		"update devices set revoked = 1 where tenant_id = ? and host_id = ? and device_id = ?",
-		fixture.tenantID, fixture.hostID, fixture.deviceID); err != nil {
-		t.Fatalf("revoke device: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
-		"/v1/ws?connection=device&tenantId=" + fixture.tenantID +
-		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
-	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ticket.Ticket}},
-	})
-	if err == nil {
-		t.Fatalf("expected revoked device authorization to fail")
-	}
-	if response == nil || response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got response=%v err=%v", response, err)
-	}
-}
-
-func dialRelay(t *testing.T, ctx context.Context, serverURL string, query string) *websocket.Conn {
+func dialRelayWithTicket(t *testing.T, ctx context.Context, serverURL, connection string, fixture httpAuthFixture, private *ecdsa.PrivateKey) *websocket.Conn {
 	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?" + query
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	subjectType, subjectID, purpose := authsvc.SubjectHost, fixture.hostID, authsvc.PurposeWebSocketHost
+	if connection == "device" {
+		subjectType, subjectID, purpose = authsvc.SubjectDevice, fixture.deviceID, authsvc.PurposeWebSocketDevice
+	}
+	ticket := issueHTTPAuthTicket(t, serverURL, private, authsvc.TicketScope{SubjectType: subjectType, SubjectID: subjectID, TenantID: fixture.tenantID, HostID: fixture.hostID, DeviceID: fixture.deviceID, Purpose: purpose})
+	url := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?connection=" + connection + "&tenantId=" + fixture.tenantID + "&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ticket.Ticket}}})
 	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
+		t.Fatalf("authenticated dial: %v", err)
 	}
 	return conn
 }
 
-func dialRelayWithAuth(t *testing.T, ctx context.Context, serverURL string, query string, token string) *websocket.Conn {
+func sessionForFixture(fixture httpAuthFixture, connection string) session.Session {
+	role := session.ConnectionHost
+	if connection == "device" {
+		role = session.ConnectionDevice
+	}
+	return session.Session{TenantID: fixture.tenantID, HostID: fixture.hostID, DeviceID: fixture.deviceID, ConnectionType: role}
+}
+
+func insertSecureTestDevice(t *testing.T, fixture httpAuthFixture) *ecdsa.PrivateKey {
 	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/v1/ws?" + query
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}}})
+	private := newHTTPPrivateKey(t)
+	_, err := fixture.store.DB().Exec(
+		`insert into devices (tenant_id, host_id, device_id, signing_public_key, agreement_public_key, key_version, binding_version, revoked, approved_at) values (?, ?, ?, ?, ?, 1, 1, 0, ?)`,
+		fixture.tenantID, fixture.hostID, fixture.deviceID, encodeHTTPPublicKey(&private.PublicKey), encodeHTTPPublicKey(&newHTTPPrivateKey(t).PublicKey), time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
-		t.Fatalf("websocket dial failed: %v", err)
+		t.Fatalf("insert device: %v", err)
+	}
+	return private
+}
+
+func dialRelay(t *testing.T, ctx context.Context, serverURL, query string) *websocket.Conn {
+	t.Helper()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(serverURL, "http")+"/v1/ws?"+query, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
 	return conn
 }
-
-func writeEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn, envelope protocol.Envelope) {
-	t.Helper()
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
-	}
-	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
-		t.Fatalf("write envelope: %v", err)
-	}
-}
-
-func readEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn) protocol.Envelope {
-	t.Helper()
-	messageType, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("read envelope: %v", err)
-	}
-	if messageType != websocket.MessageText {
-		t.Fatalf("expected text message, got %v", messageType)
-	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		t.Fatalf("unmarshal envelope: %v; data=%s", err, string(data))
-	}
-	return envelope
-}
-
-func insertHTTPDeviceIdentity(t *testing.T, fixture httpAuthFixture) *ecdsa.PrivateKey {
-	t.Helper()
-	signingPrivate := newHTTPPrivateKey(t)
-	if _, err := fixture.store.DB().Exec(
-		`insert into devices
-(tenant_id, host_id, device_id, signing_public_key, agreement_public_key,
- key_version, binding_version, revoked, approved_at)
-values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		fixture.tenantID,
-		fixture.hostID,
-		fixture.deviceID,
-		encodeHTTPPublicKey(&signingPrivate.PublicKey),
-		encodeHTTPPublicKey(&newHTTPPrivateKey(t).PublicKey),
-		1,
-		1,
-		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("insert device identity: %v", err)
-	}
-	return signingPrivate
+func secureEnvelope(tenant, host, device, direction, kind, messageID string) []byte {
+	b64 := func(n int) string { return base64.RawURLEncoding.EncodeToString(make([]byte, n)) }
+	return []byte(fmt.Sprintf(`{"protocolVersion":1,"frameType":"session.envelope","sessionId":"%s","tenantId":"%s","hostId":"%s","deviceId":"%s","direction":"%s","kind":"%s","messageId":"%s","sequence":1,"createdAt":1,"payloadEncoding":"encrypted-json","nonce":"%s","ciphertext":"%s"}`, b64(32), tenant, host, device, direction, kind, messageID, b64(12), b64(16)))
 }

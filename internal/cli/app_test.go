@@ -280,22 +280,11 @@ func TestRunServeWithCanceledContextConstructsServer(t *testing.T) {
 	}
 }
 
-func TestRunDebugCommandsEmitDeterministicPayloads(t *testing.T) {
+func TestRunDebugRejectsRemovedPlaintextPayloadCommands(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := Run([]string{"debug", "host", "--tenant", "tenant_a", "--host", "host_a", "--device", "device_a", "--value", "hello"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("debug host failed: code=%d stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `"direction":"windows_to_mobile"`) || !strings.Contains(stdout.String(), `remote/pong`) {
-		t.Fatalf("unexpected host debug output: %q", stdout.String())
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := Run([]string{"debug", "mobile", "--tenant", "tenant_a", "--host", "host_a", "--device", "device_a", "--value", "hello"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("debug mobile failed: code=%d stderr=%s", code, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `"direction":"mobile_to_windows"`) || !strings.Contains(stdout.String(), `remote/ping`) {
-		t.Fatalf("unexpected mobile debug output: %q", stdout.String())
+	if code := Run([]string{"debug", "mobile"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "auth-header") {
+		t.Fatalf("plaintext debug command was retained: code=%d stderr=%q", code, stderr.String())
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
+	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
 	"github.com/mycodex/mycodex-relay/internal/security"
 	"github.com/mycodex/mycodex-relay/internal/session"
@@ -22,52 +23,46 @@ import (
 	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
+const (
+	closeInvalidFrame = websocket.StatusCode(4001)
+	closeRouteMissing = websocket.StatusCode(4004)
+	closeIdentity     = websocket.StatusCode(4008)
+	closeReplaced     = websocket.StatusCode(4009)
+)
+
 type Server struct {
-	config config.Config
-	mux    *http.ServeMux
-	store  *store.Store
-
-	authOnce    sync.Once
-	identity    *security.RelayIdentitySigner
-	authService *authsvc.Service
-	authErr     error
-
+	config            config.Config
+	mux               *http.ServeMux
+	store             *store.Store
+	authOnce          sync.Once
+	identity          *security.RelayIdentitySigner
+	authService       *authsvc.Service
+	authErr           error
 	challengeMu       sync.Mutex
 	challengeAttempts map[string]challengeAttempt
-
-	mu      sync.RWMutex
-	hosts   map[string]*webSocketSession
-	devices map[string]*webSocketSession
+	mu                sync.RWMutex
+	hosts             map[string]*webSocketSession
+	devices           map[string]*webSocketSession
+	generations       map[string]uint64
 }
 
 func NewServer(cfg config.Config) *Server {
-	server := &Server{
-		config:            cfg,
-		mux:               http.NewServeMux(),
-		hosts:             make(map[string]*webSocketSession),
-		devices:           make(map[string]*webSocketSession),
-		challengeAttempts: make(map[string]challengeAttempt),
-	}
-	server.mux.HandleFunc("/health", server.handleHealth)
-	server.mux.HandleFunc("/.well-known/mycodex-relay", server.handleMetadata)
-	server.mux.HandleFunc("/v1/ws", server.handleWebSocket)
-	server.mux.HandleFunc("/v1/hosts/enroll", server.handleEnrollHost)
-	server.mux.HandleFunc("/v1/auth/challenges", server.handleCreateChallenge)
-	server.mux.HandleFunc("/v1/auth/prove", server.handleProve)
-	server.registerPairingRoutes()
-	return server
+	s := &Server{config: cfg, mux: http.NewServeMux(), hosts: map[string]*webSocketSession{}, devices: map[string]*webSocketSession{}, generations: map[string]uint64{}, challengeAttempts: map[string]challengeAttempt{}}
+	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.HandleFunc("/.well-known/mycodex-relay", s.handleMetadata)
+	s.mux.HandleFunc("/v1/ws", s.handleWebSocket)
+	s.mux.HandleFunc("/v1/hosts/enroll", s.handleEnrollHost)
+	s.mux.HandleFunc("/v1/auth/challenges", s.handleCreateChallenge)
+	s.mux.HandleFunc("/v1/auth/prove", s.handleProve)
+	s.registerPairingRoutes()
+	return s
 }
-
 func NewServerWithStore(cfg config.Config, st *store.Store) *Server {
-	server := NewServer(cfg)
-	server.store = st
-	return server
+	s := NewServer(cfg)
+	s.store = st
+	return s
 }
-
-func (s *Server) Handler() http.Handler {
-	return s.mux
-}
-
+func (s *Server) Handler() http.Handler { return s.mux }
 func (s *Server) Serve(ctx context.Context) error {
 	if err := s.ensureAuth(); err != nil {
 		return fmt.Errorf("initialize Relay identity: %w", err)
@@ -89,29 +84,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.config.InternalListenHost == "" || s.config.InternalListenPort == 0 {
 		return s.serve(ctx, publicListener, tlsConfig)
 	}
-
-	internalListener, err := net.Listen(
-		"tcp",
-		net.JoinHostPort(s.config.InternalListenHost, strconv.Itoa(s.config.InternalListenPort)))
+	internalListener, err := net.Listen("tcp", net.JoinHostPort(s.config.InternalListenHost, strconv.Itoa(s.config.InternalListenPort)))
 	if err != nil {
 		_ = publicListener.Close()
 		return fmt.Errorf("internal listener: %w", err)
 	}
 	return s.serveBoth(ctx, publicListener, internalListener, tlsConfig)
 }
-
-func (s *Server) serveBoth(
-	ctx context.Context,
-	publicListener net.Listener,
-	internalListener net.Listener,
-	tlsConfig *tls.Config,
-) error {
+func (s *Server) serveBoth(ctx context.Context, publicListener, internalListener net.Listener, tlsConfig *tls.Config) error {
 	serveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make(chan error, 2)
 	go func() { results <- s.serve(serveCtx, publicListener, tlsConfig) }()
 	go func() { results <- s.serve(serveCtx, internalListener, nil) }()
-
 	first := <-results
 	cancel()
 	second := <-results
@@ -120,7 +105,6 @@ func (s *Server) serveBoth(
 	}
 	return second
 }
-
 func (s *Server) buildTLSConfig() (*tls.Config, error) {
 	if !s.config.TLS.Enabled {
 		return nil, nil
@@ -129,18 +113,11 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load TLS certificate: %w", err)
 	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{certificate},
-		MinVersion:   tls.VersionTLS12,
-	}, nil
+	return &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}, nil
 }
-
 func (s *Server) serve(ctx context.Context, listener net.Listener, tlsConfig *tls.Config) error {
 	httpServer := &http.Server{Handler: s.Handler(), TLSConfig: tlsConfig}
-	go func() {
-		<-ctx.Done()
-		_ = httpServer.Shutdown(context.Background())
-	}()
+	go func() { <-ctx.Done(); _ = httpServer.Shutdown(context.Background()) }()
 	var err error
 	if tlsConfig != nil {
 		err = httpServer.ServeTLS(listener, "", "")
@@ -152,20 +129,19 @@ func (s *Server) serve(ctx context.Context, listener net.Listener, tlsConfig *tl
 	}
 	return err
 }
-
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("{\"status\":\"ok\"}\n"))
+	_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	activeSession, err := sessionFromRequest(r)
+	active, err := sessionFromRequest(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "bad websocket request", http.StatusBadRequest)
 		return
 	}
-	if !s.authenticateSession(r, activeSession) {
+	if !s.authenticateSession(r, active) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -173,40 +149,38 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn.SetReadLimit(webSocketReadLimit(s.config.DefaultQuota.MaxMessageBytes))
-	ws := &webSocketSession{session: activeSession, conn: conn}
-	s.addSession(ws)
-	defer func() {
-		s.removeSession(ws)
-		conn.Close(websocket.StatusNormalClosure, "")
-	}()
+	conn.SetReadLimit(protocol.WireFrameLimit(s.config.DefaultQuota.MaxMessageBytes))
+	ws := &webSocketSession{session: active, conn: conn}
+	if !s.addSession(ws) {
+		closeSocket(conn, closeIdentity, "identity_or_direction_mismatch")
+		return
+	}
+	defer func() { s.removeSession(ws); closeSocket(conn, websocket.StatusNormalClosure, "") }()
 	for {
 		messageType, data, err := conn.Read(r.Context())
 		if err != nil {
 			return
 		}
 		if messageType != websocket.MessageText {
-			s.writeError(ws, protocol.Envelope{TenantID: activeSession.TenantID, HostID: activeSession.HostID, DeviceID: activeSession.DeviceID}, "invalid_envelope")
-			continue
+			closeSocket(conn, closeInvalidFrame, "invalid_frame")
+			return
 		}
-		var envelope protocol.Envelope
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			s.writeError(ws, protocol.Envelope{TenantID: activeSession.TenantID, HostID: activeSession.HostID, DeviceID: activeSession.DeviceID}, "invalid_envelope")
-			continue
+		frame, err := protocol.ParseRelayFrame(data, s.config.DefaultQuota.MaxMessageBytes)
+		if err != nil {
+			closeSocket(conn, closeInvalidFrame, "invalid_frame")
+			return
 		}
-		if err := envelope.Validate(s.config.DefaultQuota.MaxMessageBytes); err != nil {
-			s.writeError(ws, envelope, errorCode(err))
-			continue
+		if code := validateSenderFrame(ws.session, frame); code != 0 {
+			closeSocket(conn, code, "identity_or_direction_mismatch")
+			return
 		}
-		if code := validateSenderEnvelope(ws.session, envelope); code != "" {
-			s.writeError(ws, envelope, code)
-			continue
+		if !s.routeFrame(ws, frame, data) {
+			return
 		}
-		s.routeEnvelope(ws, envelope)
 	}
 }
 
-func (s *Server) authenticateSession(r *http.Request, activeSession session.Session) bool {
+func (s *Server) authenticateSession(r *http.Request, active session.Session) bool {
 	if s.store == nil {
 		return true
 	}
@@ -215,34 +189,16 @@ func (s *Server) authenticateSession(r *http.Request, activeSession session.Sess
 		return false
 	}
 	var scope authsvc.TicketScope
-	switch activeSession.ConnectionType {
+	switch active.ConnectionType {
 	case session.ConnectionHost:
-		scope = authsvc.TicketScope{
-			SubjectType: authsvc.SubjectHost,
-			SubjectID:   activeSession.HostID,
-			TenantID:    activeSession.TenantID,
-			HostID:      activeSession.HostID,
-			DeviceID:    activeSession.DeviceID,
-			Purpose:     authsvc.PurposeWebSocketHost,
-		}
+		scope = authsvc.TicketScope{SubjectType: authsvc.SubjectHost, SubjectID: active.HostID, TenantID: active.TenantID, HostID: active.HostID, DeviceID: active.DeviceID, Purpose: authsvc.PurposeWebSocketHost}
 	case session.ConnectionDevice:
-		scope = authsvc.TicketScope{
-			SubjectType: authsvc.SubjectDevice,
-			SubjectID:   activeSession.DeviceID,
-			TenantID:    activeSession.TenantID,
-			HostID:      activeSession.HostID,
-			DeviceID:    activeSession.DeviceID,
-			Purpose:     authsvc.PurposeWebSocketDevice,
-		}
+		scope = authsvc.TicketScope{SubjectType: authsvc.SubjectDevice, SubjectID: active.DeviceID, TenantID: active.TenantID, HostID: active.HostID, DeviceID: active.DeviceID, Purpose: authsvc.PurposeWebSocketDevice}
 	default:
 		return false
 	}
-	if err := s.ensureAuth(); err != nil || s.authService == nil {
-		return false
-	}
-	return s.authService.ConsumeTicket(token, scope) == nil
+	return s.ensureAuth() == nil && s.authService != nil && s.authService.ConsumeTicket(token, scope) == nil
 }
-
 func (s *Server) authorizeTenant(w http.ResponseWriter, r *http.Request, tenantID string) bool {
 	if s.store == nil {
 		writeJSON(w, http.StatusServiceUnavailable, protocol.ErrorPayload{Code: "store_required"})
@@ -253,26 +209,23 @@ func (s *Server) authorizeTenant(w http.ResponseWriter, r *http.Request, tenantI
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorPayload{Code: "unauthorized"})
 		return false
 	}
-	tenantService := tenant.NewService(s.store)
-	item, err := tenantService.Get(tenantID)
+	item, err := tenant.NewService(s.store).Get(tenantID)
 	if err != nil || !item.Enabled || !tenant.VerifySecretHash(item.SecretHash, token) {
 		writeJSON(w, http.StatusUnauthorized, protocol.ErrorPayload{Code: "unauthorized"})
 		return false
 	}
 	return true
 }
-
 func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
-	if r.Method != method {
-		w.Header().Set("Allow", method)
-		writeJSON(w, http.StatusMethodNotAllowed, protocol.ErrorPayload{Code: "method_not_allowed"})
-		return false
+	if r.Method == method {
+		return true
 	}
-	return true
+	w.Header().Set("Allow", method)
+	writeJSON(w, http.StatusMethodNotAllowed, protocol.ErrorPayload{Code: "method_not_allowed"})
+	return false
 }
-
 func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, target interface{}) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, int64(s.config.DefaultQuota.MaxMessageBytes))
+	r.Body = http.MaxBytesReader(w, r.Body, int64(protocol.EffectiveMessageBytes(s.config.DefaultQuota.MaxMessageBytes)))
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -290,161 +243,184 @@ func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, target interfa
 	}
 	return true
 }
-
 func writeJSON(w http.ResponseWriter, status int, value interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	encoder := json.NewEncoder(w)
-	encoder.Encode(value)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 type webSocketSession struct {
-	session session.Session
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	session    session.Session
+	conn       *websocket.Conn
+	generation uint64
+	writeMu    sync.Mutex
 }
 
-func (s *Server) addSession(ws *webSocketSession) {
+func (s *Server) addSession(ws *webSocketSession) bool {
+	var closeList []*webSocketSession
+	key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ws.session.ConnectionType == session.ConnectionHost {
-		s.hosts[deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)] = ws
+	if !s.routeActiveLocked(ws.session) {
+		s.mu.Unlock()
+		return false
 	}
-	if ws.session.ConnectionType == session.ConnectionDevice {
-		s.devices[deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)] = ws
+	s.generations[key]++
+	ws.generation = s.generations[key]
+	switch ws.session.ConnectionType {
+	case session.ConnectionHost:
+		if old := s.hosts[key]; old != nil {
+			delete(s.hosts, key)
+			closeList = append(closeList, old)
+		}
+		if old := s.devices[key]; old != nil {
+			delete(s.devices, key)
+			closeList = append(closeList, old)
+		}
+		s.hosts[key] = ws
+	case session.ConnectionDevice:
+		if old := s.devices[key]; old != nil {
+			delete(s.devices, key)
+			closeList = append(closeList, old)
+		}
+		s.devices[key] = ws
+	default:
+		s.mu.Unlock()
+		return false
 	}
+	s.mu.Unlock()
+	closeSessions(closeList, closeReplaced, "peer_replaced")
+	return true
 }
-
+func (s *Server) routeActiveLocked(active session.Session) bool {
+	if s.store == nil {
+		return true
+	}
+	_, err := pairing.NewService(s.store).GetDevice(active.TenantID, active.HostID, active.DeviceID)
+	return err == nil
+}
 func (s *Server) removeSession(ws *webSocketSession) {
+	var closeList []*webSocketSession
+	key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ws.session.ConnectionType == session.ConnectionHost {
-		key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
+	switch ws.session.ConnectionType {
+	case session.ConnectionHost:
 		if s.hosts[key] == ws {
 			delete(s.hosts, key)
+			if peer := s.devices[key]; peer != nil {
+				delete(s.devices, key)
+				closeList = append(closeList, peer)
+			}
 		}
-	}
-	if ws.session.ConnectionType == session.ConnectionDevice {
-		key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
+	case session.ConnectionDevice:
 		if s.devices[key] == ws {
 			delete(s.devices, key)
+			if peer := s.hosts[key]; peer != nil {
+				delete(s.hosts, key)
+				closeList = append(closeList, peer)
+			}
 		}
 	}
+	s.mu.Unlock()
+	closeSessions(closeList, closeRouteMissing, "route_unavailable")
 }
-
-func (s *Server) isDeviceOnline(tenantID string, hostID string, deviceID string) bool {
+func (s *Server) isDeviceOnline(tenantID, hostID, deviceID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, ok := s.devices[deviceKey(tenantID, hostID, deviceID)]
-	return ok
+	return s.devices[deviceKey(tenantID, hostID, deviceID)] != nil
 }
-
-func (s *Server) disconnectDevice(tenantID string, hostID string, deviceID string) {
-	s.mu.Lock()
+func (s *Server) revokeDevice(tenantID, hostID, deviceID string) error {
 	key := deviceKey(tenantID, hostID, deviceID)
-	target := s.devices[key]
-	delete(s.devices, key)
-	s.mu.Unlock()
-	if target != nil {
-		_ = target.conn.CloseNow()
+	var closeList []*webSocketSession
+	s.mu.Lock()
+	if err := pairing.NewService(s.store).RevokeDevice(tenantID, hostID, deviceID); err != nil {
+		s.mu.Unlock()
+		return err
 	}
+	if host := s.hosts[key]; host != nil {
+		delete(s.hosts, key)
+		closeList = append(closeList, host)
+	}
+	if device := s.devices[key]; device != nil {
+		delete(s.devices, key)
+		closeList = append(closeList, device)
+	}
+	s.generations[key]++
+	s.mu.Unlock()
+	closeSessions(closeList, closeIdentity, "identity_or_direction_mismatch")
+	return nil
 }
-
-func (s *Server) routeEnvelope(sender *webSocketSession, envelope protocol.Envelope) {
-	var target *webSocketSession
+func (s *Server) routeFrame(sender *webSocketSession, frame protocol.RelayFrame, data []byte) bool {
+	key := deviceKey(frame.TenantID, frame.HostID, frame.DeviceID)
 	s.mu.RLock()
-	switch envelope.Direction {
-	case protocol.DirectionMobileToWindows:
-		target = s.hosts[deviceKey(envelope.TenantID, envelope.HostID, envelope.DeviceID)]
-	case protocol.DirectionWindowsToMobile:
-		target = s.devices[deviceKey(envelope.TenantID, envelope.HostID, envelope.DeviceID)]
-	default:
-		target = nil
+	current := s.hosts[key]
+	if sender.session.ConnectionType == session.ConnectionDevice {
+		current = s.devices[key]
+	}
+	if current != sender || sender.generation != s.generations[key] {
+		s.mu.RUnlock()
+		closeSocket(sender.conn, closeReplaced, "peer_replaced")
+		return false
+	}
+	target := s.hosts[key]
+	if frame.Direction == protocol.DirectionWindowsToMobile {
+		target = s.devices[key]
 	}
 	s.mu.RUnlock()
 	if target == nil {
-		s.writeError(sender, envelope, "route_not_found")
-		return
+		closeSocket(sender.conn, closeRouteMissing, "route_unavailable")
+		return false
 	}
-	if err := target.writeEnvelope(envelope); err != nil {
-		s.writeError(sender, envelope, "route_not_found")
+	if err := target.writeRaw(data); err != nil {
+		closeSocket(sender.conn, closeRouteMissing, "route_unavailable")
+		return false
 	}
+	return true
 }
-
-func (s *Server) writeError(target *webSocketSession, source protocol.Envelope, code string) {
-	correlationID := source.MessageID
-	payload, err := json.Marshal(protocol.ErrorPayload{Code: code})
-	if err != nil {
-		payload = []byte("{\"code\":\"internal_error\"}")
-	}
-	errorEnvelope := protocol.Envelope{
-		ProtocolVersion: 1,
-		MessageID:       "error-" + source.MessageID,
-		CorrelationID:   &correlationID,
-		TenantID:        source.TenantID,
-		HostID:          source.HostID,
-		DeviceID:        source.DeviceID,
-		SessionID:       target.session.SessionID,
-		Direction:       protocol.DirectionSystem,
-		Kind:            "system.error",
-		PayloadEncoding: protocol.PayloadEncodingPlainJSON,
-		Payload:         string(payload),
-	}
-	if errorEnvelope.MessageID == "error-" {
-		errorEnvelope.MessageID = "error"
-	}
-	target.writeEnvelope(errorEnvelope)
-}
-
-func (ws *webSocketSession) writeEnvelope(envelope protocol.Envelope) error {
-	data, err := json.Marshal(envelope)
-	if err != nil {
-		return err
-	}
+func (ws *webSocketSession) writeRaw(data []byte) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
 	return ws.conn.Write(context.Background(), websocket.MessageText, data)
 }
-
-func webSocketReadLimit(maxPayloadBytes int) int64 {
-	if maxPayloadBytes < 0 {
-		return -1
-	}
-	return int64(maxPayloadBytes)*2 + 64*1024
+func closeSocket(conn *websocket.Conn, code websocket.StatusCode, reason string) {
+	_ = conn.Close(code, reason)
 }
 
+func closeSessions(sessions []*webSocketSession, code websocket.StatusCode, reason string) {
+	for _, item := range sessions {
+		go closeSocket(item.conn, code, reason)
+	}
+}
 func sessionFromRequest(r *http.Request) (session.Session, error) {
 	query := r.URL.Query()
-	connection := query.Get("connection")
-	result := session.Session{
-		TenantID:  query.Get("tenantId"),
-		HostID:    query.Get("hostId"),
-		DeviceID:  query.Get("deviceId"),
-		SessionID: query.Get("sessionId"),
+	if len(query) != 4 {
+		return session.Session{}, fmt.Errorf("invalid query")
 	}
-	if result.SessionID == "" {
-		result.SessionID = "session"
-	}
-	if result.TenantID == "" || result.HostID == "" {
-		return session.Session{}, fmt.Errorf("tenantId and hostId are required")
-	}
-	switch connection {
-	case "host":
-		if result.DeviceID == "" {
-			return session.Session{}, fmt.Errorf("deviceId is required")
+	required := []string{"connection", "tenantId", "hostId", "deviceId"}
+	for _, key := range required {
+		values, ok := query[key]
+		if !ok || len(values) != 1 || values[0] == "" {
+			return session.Session{}, fmt.Errorf("invalid query")
 		}
+	}
+	for key := range query {
+		if key != "connection" && key != "tenantId" && key != "hostId" && key != "deviceId" {
+			return session.Session{}, fmt.Errorf("invalid query")
+		}
+	}
+	result := session.Session{TenantID: query.Get("tenantId"), HostID: query.Get("hostId"), DeviceID: query.Get("deviceId")}
+	if len([]byte(result.TenantID)) > 128 || len([]byte(result.HostID)) > 128 || len([]byte(result.DeviceID)) > 128 {
+		return session.Session{}, fmt.Errorf("invalid query")
+	}
+	switch query.Get("connection") {
+	case "host":
 		result.ConnectionType = session.ConnectionHost
 	case "device":
-		if result.DeviceID == "" {
-			return session.Session{}, fmt.Errorf("deviceId is required")
-		}
 		result.ConnectionType = session.ConnectionDevice
 	default:
-		return session.Session{}, fmt.Errorf("connection must be host or device")
+		return session.Session{}, fmt.Errorf("invalid query")
 	}
 	return result, nil
 }
-
 func bearerToken(header string) (string, bool) {
 	const prefix = "Bearer "
 	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
@@ -452,45 +428,18 @@ func bearerToken(header string) (string, bool) {
 	}
 	return header[len(prefix):], true
 }
-
-func hostKey(tenantID string, hostID string) string {
-	return tenantID + "/" + hostID
-}
-
-func deviceKey(tenantID string, hostID string, deviceID string) string {
+func deviceKey(tenantID, hostID, deviceID string) string {
 	return tenantID + "/" + hostID + "/" + deviceID
 }
-
-func validateSenderEnvelope(sender session.Session, envelope protocol.Envelope) string {
-	switch sender.ConnectionType {
-	case session.ConnectionHost:
-		if envelope.TenantID != sender.TenantID ||
-			envelope.HostID != sender.HostID ||
-			envelope.DeviceID != sender.DeviceID {
-			return "identity_mismatch"
-		}
-		if envelope.Direction != protocol.DirectionWindowsToMobile {
-			return "direction_not_allowed"
-		}
-	case session.ConnectionDevice:
-		if envelope.TenantID != sender.TenantID || envelope.HostID != sender.HostID || envelope.DeviceID != sender.DeviceID {
-			return "identity_mismatch"
-		}
-		if envelope.Direction != protocol.DirectionMobileToWindows {
-			return "direction_not_allowed"
-		}
-	default:
-		return "identity_mismatch"
+func validateSenderFrame(sender session.Session, frame protocol.RelayFrame) websocket.StatusCode {
+	if frame.TenantID != sender.TenantID || frame.HostID != sender.HostID || frame.DeviceID != sender.DeviceID {
+		return closeIdentity
 	}
-	return ""
-}
-
-func errorCode(err error) string {
-	text := err.Error()
-	for i := 0; i < len(text); i++ {
-		if text[i] == ':' {
-			return text[:i]
-		}
+	if sender.ConnectionType == session.ConnectionHost && frame.Direction != protocol.DirectionWindowsToMobile {
+		return closeIdentity
 	}
-	return text
+	if sender.ConnectionType == session.ConnectionDevice && frame.Direction != protocol.DirectionMobileToWindows {
+		return closeIdentity
+	}
+	return 0
 }
