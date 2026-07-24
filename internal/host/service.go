@@ -15,7 +15,6 @@ type Host struct {
 	TenantID           string
 	HostID             string
 	DisplayName        string
-	HostPublicKey      string
 	SigningPublicKey   string
 	AgreementPublicKey string
 	KeyVersion         int64
@@ -71,13 +70,12 @@ func (s *Service) EnrollHost(request Enrollment) (Host, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := transaction.Exec(
 		`insert into hosts
-(tenant_id, host_id, display_name, host_public_key, signing_public_key,
+(tenant_id, host_id, display_name, signing_public_key,
  agreement_public_key, key_version, enabled, revoked, registered_at, last_seen_at)
-values (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
+values (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
 on conflict(tenant_id, host_id) do nothing`,
 		request.TenantID, request.HostID, request.DisplayName,
-		request.SigningPublicKey, request.SigningPublicKey,
-		request.AgreementPublicKey, request.KeyVersion,
+		request.SigningPublicKey, request.AgreementPublicKey, request.KeyVersion,
 		now, now)
 	if err != nil {
 		return Host{}, fmt.Errorf("internal_error")
@@ -122,27 +120,10 @@ where tenant_id = ? and host_id = ?
 	return s.GetHost(request.TenantID, request.HostID)
 }
 
-func (s *Service) RegisterHost(tenantID string, hostID string, displayName string, hostPublicKey string) error {
-	if strings.TrimSpace(tenantID) == "" || strings.TrimSpace(hostID) == "" {
-		return fmt.Errorf("tenantId and hostId are required")
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.store.DB().Exec(
-		`insert into hosts (tenant_id, host_id, display_name, host_public_key, enabled, registered_at, last_seen_at)
-values (?, ?, ?, ?, 1, ?, ?)
-on conflict(tenant_id, host_id) do update set
-  display_name = excluded.display_name,
-  host_public_key = excluded.host_public_key,
-  enabled = 1,
-  last_seen_at = excluded.last_seen_at`,
-		tenantID, hostID, strings.TrimSpace(displayName), hostPublicKey, now, now)
-	return err
-}
-
 func (s *Service) GetHost(tenantID string, hostID string) (Host, error) {
 	row := s.store.DB().QueryRow(
-		`select tenant_id, host_id, display_name, host_public_key,
-signing_public_key, agreement_public_key, key_version, enabled, revoked,
+		`select tenant_id, host_id, display_name, signing_public_key,
+agreement_public_key, key_version, enabled, revoked,
 registered_at, last_seen_at
 from hosts where tenant_id = ? and host_id = ?`,
 		tenantID, hostID)
@@ -155,7 +136,6 @@ from hosts where tenant_id = ? and host_id = ?`,
 		&result.TenantID,
 		&result.HostID,
 		&result.DisplayName,
-		&result.HostPublicKey,
 		&result.SigningPublicKey,
 		&result.AgreementPublicKey,
 		&result.KeyVersion,

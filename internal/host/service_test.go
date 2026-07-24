@@ -12,34 +12,52 @@ import (
 	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
-func TestRegisterAndGetHostIsTenantScoped(t *testing.T) {
+func TestEnrolledHostsAreTenantScoped(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "relay-state.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
 
-	service := NewService(st)
-	if err := service.RegisterHost("tenant_a", "host_same", "Windows A", "public-a"); err != nil {
-		t.Fatalf("RegisterHost tenant_a failed: %v", err)
+	tenantA, _, err := tenant.NewService(st).Create("Tenant A")
+	if err != nil {
+		t.Fatalf("create tenant A: %v", err)
 	}
-	if err := service.RegisterHost("tenant_b", "host_same", "Windows B", "public-b"); err != nil {
-		t.Fatalf("RegisterHost tenant_b failed: %v", err)
+	tenantB, _, err := tenant.NewService(st).Create("Tenant B")
+	if err != nil {
+		t.Fatalf("create tenant B: %v", err)
+	}
+	service := NewService(st)
+	signingA := newPublicKey(t)
+	agreementA := newPublicKey(t)
+	signingB := newPublicKey(t)
+	agreementB := newPublicKey(t)
+	if _, err := service.EnrollHost(Enrollment{
+		TenantID: tenantA.TenantID, HostID: "host_same", DisplayName: "Windows A",
+		SigningPublicKey: signingA, AgreementPublicKey: agreementA, KeyVersion: 1,
+	}); err != nil {
+		t.Fatalf("EnrollHost tenant A failed: %v", err)
+	}
+	if _, err := service.EnrollHost(Enrollment{
+		TenantID: tenantB.TenantID, HostID: "host_same", DisplayName: "Windows B",
+		SigningPublicKey: signingB, AgreementPublicKey: agreementB, KeyVersion: 1,
+	}); err != nil {
+		t.Fatalf("EnrollHost tenant B failed: %v", err)
 	}
 
-	host, err := service.GetHost("tenant_a", "host_same")
+	host, err := service.GetHost(tenantA.TenantID, "host_same")
 	if err != nil {
 		t.Fatalf("GetHost failed: %v", err)
 	}
-	if host.DisplayName != "Windows A" || host.HostPublicKey != "public-a" {
-		t.Fatalf("unexpected tenant_a host: %+v", host)
+	if host.DisplayName != "Windows A" || host.SigningPublicKey != signingA {
+		t.Fatalf("unexpected tenant A host: %+v", host)
 	}
-	other, err := service.GetHost("tenant_b", "host_same")
+	other, err := service.GetHost(tenantB.TenantID, "host_same")
 	if err != nil {
 		t.Fatalf("GetHost tenant_b failed: %v", err)
 	}
-	if other.DisplayName != "Windows B" || other.HostPublicKey != "public-b" {
-		t.Fatalf("unexpected tenant_b host: %+v", other)
+	if other.DisplayName != "Windows B" || other.SigningPublicKey != signingB {
+		t.Fatalf("unexpected tenant B host: %+v", other)
 	}
 }
 

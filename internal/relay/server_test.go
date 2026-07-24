@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -18,11 +19,8 @@ import (
 	"github.com/coder/websocket"
 	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
 	"github.com/mycodex/mycodex-relay/internal/config"
-	"github.com/mycodex/mycodex-relay/internal/pairing"
 	"github.com/mycodex/mycodex-relay/internal/protocol"
 	"github.com/mycodex/mycodex-relay/internal/security"
-	"github.com/mycodex/mycodex-relay/internal/store"
-	"github.com/mycodex/mycodex-relay/internal/tenant"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -431,14 +429,14 @@ func TestWebSocketAuthenticatedHostAndDeviceRoutePingPong(t *testing.T) {
 	hostPrivate, _ := enrollHTTPHost(t, fixture)
 	devicePrivate := newHTTPPrivateKey(t)
 	devicePublic := encodeHTTPPublicKey(&devicePrivate.PublicKey)
+	agreementPublic := encodeHTTPPublicKey(&newHTTPPrivateKey(t).PublicKey)
 	if _, err := fixture.store.DB().Exec(
 		`insert into devices
-(tenant_id, host_id, device_id, display_name, platform, device_public_key,
- signing_public_key, agreement_public_key, key_version, binding_version,
- device_token_hash, revoked, bound_at)
-values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, ?)`,
+(tenant_id, host_id, device_id, signing_public_key, agreement_public_key,
+ key_version, binding_version, revoked, approved_at)
+values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		fixture.tenantID, fixture.hostID, fixture.deviceID,
-		"Android", "android", devicePublic, devicePublic, devicePublic, 1, 1,
+		devicePublic, agreementPublic, 1, 1,
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("insert device identity: %v", err)
 	}
@@ -474,15 +472,14 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, ?)`,
 }
 
 func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
-	st, cfg, tenantID, _, _ := authenticatedRelayState(t)
-	defer st.Close()
-	server := NewServerWithStore(cfg, st)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
+	fixture := newHTTPAuthFixture(t)
+	enrollHTTPHost(t, fixture)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=host&tenantId=" + tenantID + "&hostId=host_a"
+	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
+		"/v1/ws?connection=host&tenantId=" + fixture.tenantID +
+		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
 	_, response, err := websocket.Dial(ctx, wsURL, nil)
 	if err == nil {
 		t.Fatalf("expected missing authorization to fail")
@@ -493,15 +490,15 @@ func TestWebSocketRejectsMissingHostAuthorization(t *testing.T) {
 }
 
 func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
-	st, cfg, tenantID, _, _ := authenticatedRelayState(t)
-	defer st.Close()
-	server := NewServerWithStore(cfg, st)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
+	fixture := newHTTPAuthFixture(t)
+	enrollHTTPHost(t, fixture)
+	insertHTTPDeviceIdentity(t, fixture)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=device&tenantId=" + tenantID + "&hostId=host_a&deviceId=device_a"
+	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
+		"/v1/ws?connection=device&tenantId=" + fixture.tenantID +
+		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
 	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer wrong"}}})
 	if err == nil {
 		t.Fatalf("expected invalid device authorization to fail")
@@ -512,20 +509,31 @@ func TestWebSocketRejectsInvalidDeviceAuthorization(t *testing.T) {
 }
 
 func TestWebSocketRejectsRevokedDeviceAuthorization(t *testing.T) {
-	st, cfg, tenantID, _, deviceToken := authenticatedRelayState(t)
-	defer st.Close()
-	pairingService := pairing.NewService(st)
-	if err := pairingService.RevokeDevice(tenantID, "host_a", "device_a"); err != nil {
+	fixture := newHTTPAuthFixture(t)
+	enrollHTTPHost(t, fixture)
+	devicePrivate := insertHTTPDeviceIdentity(t, fixture)
+	ticket := issueHTTPAuthTicket(t, fixture.server.URL, devicePrivate, authsvc.TicketScope{
+		SubjectType: authsvc.SubjectDevice,
+		SubjectID:   fixture.deviceID,
+		TenantID:    fixture.tenantID,
+		HostID:      fixture.hostID,
+		DeviceID:    fixture.deviceID,
+		Purpose:     authsvc.PurposeWebSocketDevice,
+	})
+	if _, err := fixture.store.DB().Exec(
+		"update devices set revoked = 1 where tenant_id = ? and host_id = ? and device_id = ?",
+		fixture.tenantID, fixture.hostID, fixture.deviceID); err != nil {
 		t.Fatalf("revoke device: %v", err)
 	}
-	server := NewServerWithStore(cfg, st)
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/ws?connection=device&tenantId=" + tenantID + "&hostId=host_a&deviceId=device_a"
-	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + deviceToken}}})
+	wsURL := "ws" + strings.TrimPrefix(fixture.server.URL, "http") +
+		"/v1/ws?connection=device&tenantId=" + fixture.tenantID +
+		"&hostId=" + fixture.hostID + "&deviceId=" + fixture.deviceID
+	_, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ticket.Ticket}},
+	})
 	if err == nil {
 		t.Fatalf("expected revoked device authorization to fail")
 	}
@@ -581,23 +589,23 @@ func readEnvelope(t *testing.T, ctx context.Context, conn *websocket.Conn) proto
 	return envelope
 }
 
-func authenticatedRelayState(t *testing.T) (*store.Store, config.Config, string, string, string) {
+func insertHTTPDeviceIdentity(t *testing.T, fixture httpAuthFixture) *ecdsa.PrivateKey {
 	t.Helper()
-	cfg := config.Default()
-	cfg.StatePath = filepath.Join(t.TempDir(), "relay-state.db")
-	st, err := store.Open(cfg.StatePath)
-	if err != nil {
-		t.Fatalf("open store: %v", err)
+	signingPrivate := newHTTPPrivateKey(t)
+	if _, err := fixture.store.DB().Exec(
+		`insert into devices
+(tenant_id, host_id, device_id, signing_public_key, agreement_public_key,
+ key_version, binding_version, revoked, approved_at)
+values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		fixture.tenantID,
+		fixture.hostID,
+		fixture.deviceID,
+		encodeHTTPPublicKey(&signingPrivate.PublicKey),
+		encodeHTTPPublicKey(&newHTTPPrivateKey(t).PublicKey),
+		1,
+		1,
+		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("insert device identity: %v", err)
 	}
-	tenantService := tenant.NewService(st)
-	created, tenantSecret, err := tenantService.Create("Alice")
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
-	}
-	pairingService := pairing.NewService(st)
-	deviceToken, err := pairingService.ApproveClaimWithToken(pairing.Claim{TenantID: created.TenantID, HostID: "host_a", DeviceID: "device_a", DeviceDisplayName: "Android", DevicePublicKey: "key", Platform: "android"})
-	if err != nil {
-		t.Fatalf("approve device: %v", err)
-	}
-	return st, cfg, created.TenantID, tenantSecret, deviceToken
+	return signingPrivate
 }

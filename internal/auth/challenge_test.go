@@ -215,12 +215,11 @@ func TestRevokedDeviceCannotProveOrConsumeTicket(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := fixture.store.DB().Exec(
 		`insert into devices
-(tenant_id, host_id, device_id, display_name, platform, device_public_key,
- signing_public_key, agreement_public_key, key_version, binding_version,
- device_token_hash, revoked, bound_at)
-values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, ?)`,
+(tenant_id, host_id, device_id, signing_public_key, agreement_public_key,
+ key_version, binding_version, revoked, approved_at)
+values (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		fixture.scope.TenantID, fixture.scope.HostID, fixture.scope.DeviceID,
-		"Android", "android", devicePublic, devicePublic, devicePublic, 1, 1, now); err != nil {
+		devicePublic, encodePublicKey(&mustGeneratePrivateKey(t).PublicKey), 1, 1, now); err != nil {
 		t.Fatalf("insert device: %v", err)
 	}
 	deviceScope := fixture.scope
@@ -268,6 +267,15 @@ values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, ?)`,
 	if err := fixture.service.ConsumeTicket(ticket.Ticket, deviceScope); err == nil {
 		t.Fatal("revoked device consumed a ticket")
 	}
+}
+
+func mustGeneratePrivateKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate P-256 key: %v", err)
+	}
+	return privateKey
 }
 
 func TestInvalidProtocolVersionAndLockedStringsFailClosed(t *testing.T) {
