@@ -19,12 +19,13 @@ build_one() {
     cp "$ROOT/scripts/package/$SCRIPT_SET"/* "$TARGET_DIR/"
     case "$SCRIPT_SET" in
       darwin-*) chmod +x "$TARGET_DIR"/*.command 2>/dev/null || true ;;
+      linux) chmod +x "$TARGET_DIR"/*.sh 2>/dev/null || true ;;
     esac
   fi
 }
 
 build_one windows amd64 windows-x64 mycodex-relay.exe windows-x64
-build_one linux amd64 linux-x64 mycodex-relay
-build_one linux arm64 linux-arm64 mycodex-relay
+build_one linux amd64 linux-x64 mycodex-relay linux
+build_one linux arm64 linux-arm64 mycodex-relay linux
 build_one darwin amd64 darwin-x64 mycodex-relay darwin-x64
 build_one darwin arm64 darwin-arm64 mycodex-relay darwin-arm64

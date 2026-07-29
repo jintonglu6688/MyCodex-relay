@@ -25,6 +25,7 @@ func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay-config.json")
 	cfg := Default()
 	cfg.PublicHost = "relay.example.com"
+	cfg.PublicTLS = true
 
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("Save failed: %v", err)
@@ -33,7 +34,7 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if loaded.PublicHost != "relay.example.com" {
-		t.Fatalf("unexpected public host: %s", loaded.PublicHost)
+	if loaded.PublicHost != "relay.example.com" || !loaded.PublicTLS {
+		t.Fatalf("unexpected public endpoint: %+v", loaded)
 	}
 }

@@ -10,8 +10,8 @@ Remove-Item -Path (Join-Path $dist "mycodex-relay-*") -Force -ErrorAction Silent
 
 $targets = @(
     @{ GOOS = "windows"; GOARCH = "amd64"; Dir = "windows-x64"; Binary = "mycodex-relay.exe"; Scripts = "windows-x64" },
-    @{ GOOS = "linux"; GOARCH = "amd64"; Dir = "linux-x64"; Binary = "mycodex-relay"; Scripts = "" },
-    @{ GOOS = "linux"; GOARCH = "arm64"; Dir = "linux-arm64"; Binary = "mycodex-relay"; Scripts = "" },
+    @{ GOOS = "linux"; GOARCH = "amd64"; Dir = "linux-x64"; Binary = "mycodex-relay"; Scripts = "linux" },
+    @{ GOOS = "linux"; GOARCH = "arm64"; Dir = "linux-arm64"; Binary = "mycodex-relay"; Scripts = "linux" },
     @{ GOOS = "darwin"; GOARCH = "amd64"; Dir = "darwin-x64"; Binary = "mycodex-relay"; Scripts = "darwin-x64" },
     @{ GOOS = "darwin"; GOARCH = "arm64"; Dir = "darwin-arm64"; Binary = "mycodex-relay"; Scripts = "darwin-arm64" }
 )

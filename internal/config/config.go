@@ -34,6 +34,7 @@ type Config struct {
 	InternalListenPort int       `json:"internalListenPort,omitempty"`
 	PublicHost         string    `json:"publicHost"`
 	PublicPort         int       `json:"publicPort"`
+	PublicTLS          bool      `json:"publicTls"`
 	StatePath          string    `json:"statePath"`
 	TLS                TLSConfig `json:"tls"`
 	DefaultQuota       Quota     `json:"defaultQuota"`

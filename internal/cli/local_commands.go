@@ -42,6 +42,7 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 	internalListenPort := flags.String("internal-listen-port", "", "loopback-only internal listen port")
 	publicHost := flags.String("public-host", "", "public host")
 	publicPort := flags.String("public-port", "", "public port")
+	publicTLS := flags.Bool("public-tls", false, "public endpoint uses TLS")
 	embeddedTLS := flags.Bool("embedded-tls", false, "create or reuse the embedded TLS identity")
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
@@ -97,6 +98,7 @@ func runLocalInit(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		cfg.PublicPort = port
 	}
+	cfg.PublicTLS = *publicTLS
 	if *embeddedTLS {
 		absoluteConfigPath, err := filepath.Abs(*configPath)
 		if err != nil {
@@ -216,19 +218,20 @@ func runLocalEnsureTenant(args []string, stdout io.Writer, stderr io.Writer) int
 func localInfoFromConfig(configPath string, cfg config.Config, tenants []tenant.Tenant, secret *localSecretOutput) (localInfoOutput, error) {
 	host, port := publicEndpoint(cfg)
 	output := localInfoOutput{
-		Version:     Version,
-		ConfigPath:  configPath,
-		StatePath:   cfg.StatePath,
-		ListenHost:  cfg.ListenHost,
-		ListenPort:  cfg.ListenPort,
-		PublicHost:  cfg.PublicHost,
-		PublicPort:  cfg.PublicPort,
-		TLSRequired: cfg.TLS.Enabled,
-		RelayHost:   host,
-		RelayPort:   port,
-		RelayURL:    relayURL(cfg, host, port),
-		Tenants:     make([]localTenantOutput, 0, len(tenants)),
-		Secret:      secret,
+		Version:             Version,
+		ConfigPath:          configPath,
+		StatePath:           cfg.StatePath,
+		ListenHost:          cfg.ListenHost,
+		ListenPort:          cfg.ListenPort,
+		PublicHost:          cfg.PublicHost,
+		PublicPort:          cfg.PublicPort,
+		ListenerTLSRequired: cfg.TLS.Enabled,
+		TLSRequired:         publicTLSRequired(cfg),
+		RelayHost:           host,
+		RelayPort:           port,
+		RelayURL:            relayURL(cfg, host, port),
+		Tenants:             make([]localTenantOutput, 0, len(tenants)),
+		Secret:              secret,
 	}
 	if cfg.TLS.Enabled {
 		fingerprint, err := security.ValidateTLSCertificatePair(cfg.TLS.CertFile, cfg.TLS.KeyFile)

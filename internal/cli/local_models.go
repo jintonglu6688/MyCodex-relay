@@ -13,6 +13,7 @@ type localInfoOutput struct {
 	InternalHealthURL   string              `json:"internalHealthUrl"`
 	PublicHost          string              `json:"publicHost"`
 	PublicPort          int                 `json:"publicPort"`
+	ListenerTLSRequired bool                `json:"listenerTlsRequired"`
 	TLSRequired         bool                `json:"tlsRequired"`
 	CertificatePath     string              `json:"certificatePath,omitempty"`
 	CertificateSHA256   string              `json:"certificateSha256,omitempty"`

@@ -29,8 +29,8 @@ The first milestone is a multi-tenant relay MVP with mock Windows host and mock 
 ## CLI
 
 ```powershell
-go run ./cmd/mycodex-relay configure --config relay-config.json --state relay-state.db --public-host relay.example.com
-go run ./cmd/mycodex-relay info --config relay-config.json --ensure-tenant --tenant-name Local
+go run ./cmd/mycodex-relay configure --config relay-config.json --state relay-state.db --public-host relay.example.com --public-port 443 --public-tls
+go run ./cmd/mycodex-relay info --config relay-config.json --ensure-tenant --tenant-name Local --json
 go run ./cmd/mycodex-relay tenant create --config relay-config.json --name Alice
 go run ./cmd/mycodex-relay tenant list --config relay-config.json
 go run ./cmd/mycodex-relay tenant show --config relay-config.json --tenant <tenantId>
@@ -72,6 +72,8 @@ Host management endpoints require `Authorization: Bearer <tenantSecret>`. Device
 GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows job also runs `scripts\build.ps1 -Version 0.1.0-ci`.
 
 ## Build
+
+Production deployment instructions are in [`docs/deployment.md`](docs/deployment.md).
 
 ### Windows embedded mode
 
@@ -123,8 +125,10 @@ dist/
     stop-relay.command
   linux-x64/
     mycodex-relay
+    deploy-relay.sh
   linux-arm64/
     mycodex-relay
+    deploy-relay.sh
 ```
 
 The Windows and macOS start scripts run `serve` from the platform directory. With no argument they prefer `relay-config.local.json` when it exists, otherwise they use `relay-config.json`. If the selected config does not exist, the script creates a default local config with `relay-state.db` as the state file before starting the relay. Logs are written to `relay.out.log` and `relay.err.log`.

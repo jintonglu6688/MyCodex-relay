@@ -61,6 +61,7 @@ func runConfigure(args []string, stdout io.Writer, stderr io.Writer) int {
 	listenPort := flags.String("listen-port", "", "listen port")
 	publicHost := flags.String("public-host", "", "public host")
 	publicPort := flags.String("public-port", "", "public port")
+	publicTLS := flags.Bool("public-tls", false, "public endpoint uses TLS")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -90,6 +91,7 @@ func runConfigure(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		cfg.PublicPort = port
 	}
+	cfg.PublicTLS = *publicTLS
 	if err := ensureParentDir(*configPath); err != nil {
 		fmt.Fprintf(stderr, "create config directory: %v\n", err)
 		return 1
@@ -136,6 +138,7 @@ func runInfo(args []string, stdout io.Writer, stderr io.Writer) int {
 	configPath := flags.String("config", "relay-config.json", "config path")
 	ensureTenant := flags.Bool("ensure-tenant", false, "create a default tenant when none exists")
 	tenantName := flags.String("tenant-name", "Local", "default tenant display name for --ensure-tenant")
+	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -161,6 +164,22 @@ func runInfo(args []string, stdout io.Writer, stderr io.Writer) int {
 		createdTenantSecret = secret
 		tenants = append(tenants, created)
 	}
+	if *jsonOutput {
+		var secret *localSecretOutput
+		if createdTenantID != "" {
+			secret = &localSecretOutput{
+				TenantID: createdTenantID,
+				Value:    createdTenantSecret,
+				Source:   "created",
+			}
+		}
+		output, err := localInfoFromConfig(*configPath, cfg, tenants, secret)
+		if err != nil {
+			fmt.Fprintf(stderr, "read server info: %v\n", err)
+			return 1
+		}
+		return writeLocalInfoJSON(stdout, output)
+	}
 	host, port := publicEndpoint(cfg)
 	relayURL := relayURL(cfg, host, port)
 	fmt.Fprintln(stdout, "MyCodex Relay")
@@ -171,7 +190,8 @@ func runInfo(args []string, stdout io.Writer, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "listenPort=%d\n", cfg.ListenPort)
 	fmt.Fprintf(stdout, "publicHost=%s\n", cfg.PublicHost)
 	fmt.Fprintf(stdout, "publicPort=%d\n", cfg.PublicPort)
-	fmt.Fprintf(stdout, "tlsRequired=%t\n", cfg.TLS.Enabled)
+	fmt.Fprintf(stdout, "listenerTlsRequired=%t\n", cfg.TLS.Enabled)
+	fmt.Fprintf(stdout, "tlsRequired=%t\n", publicTLSRequired(cfg))
 	fmt.Fprintf(stdout, "relayHost=%s\n", host)
 	fmt.Fprintf(stdout, "relayPort=%d\n", port)
 	fmt.Fprintf(stdout, "relayUrl=%s\n", relayURL)
@@ -367,7 +387,7 @@ func runTenantPrintConnection(args []string, stdout io.Writer, stderr io.Writer)
 	host, port := publicEndpoint(cfg)
 	fmt.Fprintf(stdout, "relayHost=%s\n", host)
 	fmt.Fprintf(stdout, "relayPort=%d\n", port)
-	fmt.Fprintf(stdout, "tlsRequired=%t\n", cfg.TLS.Enabled)
+	fmt.Fprintf(stdout, "tlsRequired=%t\n", publicTLSRequired(cfg))
 	fmt.Fprintf(stdout, "tenantId=%s\n", *tenantID)
 	return 0
 }
@@ -413,10 +433,14 @@ func publicEndpoint(cfg config.Config) (string, int) {
 
 func relayURL(cfg config.Config, host string, port int) string {
 	scheme := "http"
-	if cfg.TLS.Enabled {
+	if publicTLSRequired(cfg) {
 		scheme = "https"
 	}
 	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func publicTLSRequired(cfg config.Config) bool {
+	return cfg.PublicTLS || cfg.TLS.Enabled
 }
 
 func openTenantService(configPath string, stderr io.Writer) (config.Config, *tenant.Service, func(), int) {

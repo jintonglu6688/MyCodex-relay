@@ -39,6 +39,7 @@ func TestRunLocalInitWritesConfigAndPrintsJson(t *testing.T) {
 		"--listen-port", "38443",
 		"--public-host", "192.0.2.42",
 		"--public-port", "38443",
+		"--public-tls",
 		"--json",
 	}, &stdout, &stderr)
 
@@ -49,7 +50,7 @@ func TestRunLocalInitWritesConfigAndPrintsJson(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if loaded.StatePath != statePath || loaded.ListenHost != "0.0.0.0" || loaded.ListenPort != 38443 || loaded.PublicHost != "192.0.2.42" || loaded.PublicPort != 38443 {
+	if loaded.StatePath != statePath || loaded.ListenHost != "0.0.0.0" || loaded.ListenPort != 38443 || loaded.PublicHost != "192.0.2.42" || loaded.PublicPort != 38443 || !loaded.PublicTLS {
 		t.Fatalf("unexpected config: %+v", loaded)
 	}
 	output := decodeLocalInfoOutput(t, stdout.String())
@@ -60,11 +61,12 @@ func TestRunLocalInitWritesConfigAndPrintsJson(t *testing.T) {
 		output.ListenPort != 38443 ||
 		output.PublicHost != "192.0.2.42" ||
 		output.PublicPort != 38443 ||
-		output.TLSRequired ||
+		output.ListenerTLSRequired ||
+		!output.TLSRequired ||
 		output.RelayHost != "192.0.2.42" ||
 		output.RelayPort != 38443 ||
-		output.RelayURL != "http://192.0.2.42:38443" ||
-		output.HealthURL != "http://192.0.2.42:38443/health" {
+		output.RelayURL != "https://192.0.2.42:38443" ||
+		output.HealthURL != "https://192.0.2.42:38443/health" {
 		t.Fatalf("unexpected JSON output: %+v", output)
 	}
 	if output.Tenants == nil || len(output.Tenants) != 0 {

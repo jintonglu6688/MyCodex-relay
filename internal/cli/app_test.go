@@ -65,6 +65,7 @@ func TestRunConfigureWritesConfigWithOverrides(t *testing.T) {
 		"--listen-port", "39000",
 		"--public-host", "relay.example.com",
 		"--public-port", "443",
+		"--public-tls",
 	}, &stdout, &stderr)
 
 	if exitCode != 0 {
@@ -77,7 +78,7 @@ func TestRunConfigureWritesConfigWithOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if loaded.ListenHost != "0.0.0.0" || loaded.ListenPort != 39000 || loaded.PublicHost != "relay.example.com" || loaded.PublicPort != 443 || loaded.StatePath != statePath {
+	if loaded.ListenHost != "0.0.0.0" || loaded.ListenPort != 39000 || loaded.PublicHost != "relay.example.com" || loaded.PublicPort != 443 || !loaded.PublicTLS || loaded.StatePath != statePath {
 		t.Fatalf("unexpected config: %+v", loaded)
 	}
 }
@@ -171,6 +172,7 @@ func TestRunInfoPrintsServerAndTenantsWithoutSecrets(t *testing.T) {
 		"--listen-port", "39000",
 		"--public-host", "relay.example.com",
 		"--public-port", "443",
+		"--public-tls",
 	}, &stdout, &stderr); code != 0 {
 		t.Fatalf("configure failed: code=%d stderr=%s", code, stderr.String())
 	}
@@ -200,11 +202,12 @@ func TestRunInfoPrintsServerAndTenantsWithoutSecrets(t *testing.T) {
 		"listenPort=39000",
 		"publicHost=relay.example.com",
 		"publicPort=443",
-		"tlsRequired=false",
+		"listenerTlsRequired=false",
+		"tlsRequired=true",
 		"relayHost=relay.example.com",
 		"relayPort=443",
-		"relayUrl=http://relay.example.com:443",
-		"healthUrl=http://relay.example.com:443/health",
+		"relayUrl=https://relay.example.com:443",
+		"healthUrl=https://relay.example.com:443/health",
 		"tenants=1",
 		"tenantId=" + tenantID,
 		"displayName=Alice",
@@ -254,6 +257,48 @@ func TestRunInfoEnsureTenantCreatesDefaultTenantAndPrintsSecretOnce(t *testing.T
 	secondOutput := stdout.String()
 	if strings.Contains(secondOutput, "tenantSecret=") || strings.Contains(secondOutput, tenantSecret) || strings.Count(secondOutput, "tenantId=") != 1 {
 		t.Fatalf("second info should not print or create another secret, got %q", secondOutput)
+	}
+}
+
+func TestRunInfoJsonReportsPublicTLSAndCreatedSecret(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "relay-config.json")
+	statePath := filepath.Join(dir, "state.db")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	if code := Run([]string{
+		"configure",
+		"--config", configPath,
+		"--state", statePath,
+		"--listen-host", "127.0.0.1",
+		"--public-host", "relay.example.com",
+		"--public-port", "443",
+		"--public-tls",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("configure failed: code=%d stderr=%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run([]string{
+		"info",
+		"--config", configPath,
+		"--ensure-tenant",
+		"--tenant-name", "Production",
+		"--json",
+	}, &stdout, &stderr); code != 0 {
+		t.Fatalf("info failed: code=%d stderr=%s", code, stderr.String())
+	}
+
+	output := decodeLocalInfoOutput(t, stdout.String())
+	if output.ListenerTLSRequired ||
+		!output.TLSRequired ||
+		output.RelayURL != "https://relay.example.com:443" ||
+		len(output.Tenants) != 1 ||
+		output.Secret == nil ||
+		output.Secret.TenantID != output.Tenants[0].TenantID ||
+		output.Secret.Value == "" {
+		t.Fatalf("unexpected JSON info: %+v", output)
 	}
 }
 
