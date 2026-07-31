@@ -39,3 +39,6 @@ jobs:
 
       - name: Test
         run: go test ./... -count=1
+
+      - name: Build
+        run: sh scripts/build.sh 0.1.0-ci

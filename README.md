@@ -69,11 +69,15 @@ Host management endpoints require `Authorization: Bearer <tenantSecret>`. Device
 
 ## CI
 
-GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows job also runs `scripts\build.ps1 -Version 0.1.0-ci`.
+GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows
+job runs `scripts\build.ps1 -Version 0.1.0-ci`; the Linux job runs
+`sh scripts/build.sh 0.1.0-ci`.
 
 ## Build
 
-Production deployment instructions are in [`docs/deployment.md`](docs/deployment.md).
+End-user release resources are under [`resources/release`](resources/release).
+Linux production deployment instructions are in
+[`resources/release/linux/DEPLOYMENT.md`](resources/release/linux/DEPLOYMENT.md).
 
 ### Windows embedded mode
 
@@ -103,22 +107,32 @@ Linux/macOS:
 sh scripts/build.sh 0.1.0-dev
 ```
 
-Build outputs are grouped by platform:
+Build outputs are grouped by platform and packaged as self-contained release
+archives:
 
 ```text
 dist/
+  mycodex-relay-0.1.0-windows-x64.zip
+  mycodex-relay-0.1.0-linux-x64.tar.gz
+  mycodex-relay-0.1.0-linux-arm64.tar.gz
+  mycodex-relay-0.1.0-macos-intel.tar.gz
+  mycodex-relay-0.1.0-macos-apple-silicon.tar.gz
+  SHA256SUMS.txt
   windows-x64/
     mycodex-relay.exe
+    README.md
+    DEPLOYMENT.md
+    VERSION.txt
     show-relay-info.bat
     start-relay.bat
     start-relay-silent.vbs
     stop-relay.bat
-  darwin-x64/
+  macos-intel/
     mycodex-relay
     show-relay-info.command
     start-relay.command
     stop-relay.command
-  darwin-arm64/
+  macos-apple-silicon/
     mycodex-relay
     show-relay-info.command
     start-relay.command
@@ -130,6 +144,14 @@ dist/
     mycodex-relay
     deploy-relay.sh
 ```
+
+Windows is distributed as ZIP; Linux and macOS are distributed as `tar.gz`.
+Every archive contains the matching binary, platform scripts, `README.md`,
+`DEPLOYMENT.md`, and `VERSION.txt`. Verify a downloaded archive against
+`SHA256SUMS.txt` before deployment.
+
+After extracting on Linux, run `chmod +x mycodex-relay *.sh`; on macOS, run
+`chmod +x mycodex-relay *.command`.
 
 The Windows and macOS start scripts run `serve` from the platform directory. With no argument they prefer `relay-config.local.json` when it exists, otherwise they use `relay-config.json`. If the selected config does not exist, the script creates a default local config with `relay-state.db` as the state file before starting the relay. Logs are written to `relay.out.log` and `relay.err.log`.
 

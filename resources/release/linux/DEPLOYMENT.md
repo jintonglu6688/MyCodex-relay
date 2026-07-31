@@ -1,17 +1,23 @@
-# MyCodex Relay 部署说明
+# MyCodex Relay Linux 部署说明
 
-本文说明如何部署独立的 MyCodex Relay 公网服务器，以及如何取得 Windows 客户端需要的连接信息。Relay 只负责认证、配对和加密消息转发；业务消息在 Windows 与移动设备之间端到端加密。
+本文适用于 `linux-x64` 和 `linux-arm64` 发布包。正式公网服务推荐使用 Ubuntu 22.04/24.04 或 Debian 12，并通过包内的 `deploy-relay.sh` 部署。
 
-## 1. 支持范围
+当前不提供 Docker 部署。一键脚本只自动管理 Ubuntu/Debian，避免用未经验证的流程修改其他发行版。
 
-| 平台 | 用途 | 推荐方式 |
-| --- | --- | --- |
-| Ubuntu 22.04/24.04、Debian 12 | 正式公网服务 | `deploy-relay.sh`、systemd、Nginx、Certbot |
-| 其他 systemd Linux | 正式公网服务 | 参照 Linux 手动步骤部署 |
-| Windows x64 | 内置服务、局域网测试或人工维护的独立服务 | 使用发行包中的批处理脚本；公网生产环境优先使用 Linux |
-| macOS x64/arm64 | 本地测试或人工维护的独立服务 | 使用发行包中的 `.command` 脚本；公网生产环境优先使用 Linux |
+## 1. 选择正确的包
 
-当前不提供 Docker 部署。Linux 一键脚本只自动管理 Ubuntu/Debian，避免用一套未经验证的脚本修改所有发行版。
+在服务器运行：
+
+```bash
+uname -m
+```
+
+| 输出 | 发布包 |
+| --- | --- |
+| `x86_64`、`amd64` | `linux-x64` |
+| `aarch64`、`arm64` | `linux-arm64` |
+
+当前不提供 32 位 `i386`/`x86` 发布包。
 
 ## 2. 部署前准备
 
@@ -22,7 +28,7 @@
 3. 域名的 A/AAAA 记录已经指向服务器。
 4. 云防火墙和系统防火墙允许 TCP 80、443。
 5. 可以使用 `sudo` 的 SSH 账号。
-6. 与服务器架构匹配的 Relay 发行包：`linux-x64` 或 `linux-arm64`。
+6. 与服务器架构匹配的 Relay 发布包。
 
 先确认 DNS：
 
@@ -34,7 +40,7 @@ getent hosts relay.example.com
 
 ## 3. Ubuntu/Debian 一键部署
 
-把发行包上传到服务器：
+解压发布包后，把其中的程序和脚本上传到服务器：
 
 ```bash
 scp mycodex-relay deploy-relay.sh ubuntu@server:/tmp/mycodex-relay/
@@ -65,9 +71,11 @@ sudo ./deploy-relay.sh install \
 9. 创建第一个租户并验证健康检查和元数据端点。
 10. 输出机器可读的连接 JSON。
 
+脚本不会覆盖不是由它管理的同名 Nginx 站点。检测到已有配置使用其他域名或未声明公网 TLS 时，也会停止并报告错误。
+
 首次创建租户时，输出中的 `secret.value` 只显示一次。立即把完整 JSON 保存到安全位置；Relay 数据库只保存访问密钥的哈希，之后无法读取原密钥。
 
-## 4. Windows 客户端需要的信息
+## 4. 导入 Windows 客户端
 
 部署成功后的 JSON 包含：
 
@@ -91,20 +99,17 @@ sudo ./deploy-relay.sh install \
 }
 ```
 
-Windows 客户端对应字段：
+在 MyCodex Windows 客户端的“服务器设置”中选择独立公网服务器，然后使用“导入服务器信息”粘贴完整 JSON。也可以手工填写：
 
 | 客户端字段 | JSON 字段 |
 | --- | --- |
-| 服务模式 | 独立公网服务器 |
 | 对外访问地址 | `relayHost` |
 | 端口 | `relayPort` |
 | 使用 TLS | `tlsRequired` |
-| 租户 ID | `secret.tenantId`；没有 `secret` 时使用 `tenants[0].tenantId` |
+| 租户 ID | `secret.tenantId`；没有 `secret` 时使用唯一启用租户的 `tenantId` |
 | 访问密钥 | `secret.value` |
-| 本机名称 | 用户可识别的 Windows 电脑名称 |
-| 主机 ID | Windows 客户端自动生成 |
 
-服务器的公开元数据可通过以下地址读取，但它不会泄露租户或访问密钥：
+公开元数据不会泄露租户或访问密钥：
 
 ```bash
 curl https://relay.example.com/.well-known/mycodex-relay
@@ -113,21 +118,19 @@ curl https://relay.example.com/health
 
 ## 5. 再次查看服务器信息
 
-在服务器运行：
-
 ```bash
 sudo /opt/mycodex-relay/mycodex-relay info \
   --config /etc/mycodex-relay/relay-config.json \
   --json
 ```
 
-也可以在发行包目录运行：
+也可以在新版发布包目录运行：
 
 ```bash
 sudo ./deploy-relay.sh info
 ```
 
-出于安全设计，已有租户的信息不会包含访问密钥。如果密钥遗失，必须轮换：
+已有租户的信息不会包含原访问密钥。如果密钥遗失，必须轮换：
 
 ```bash
 sudo /opt/mycodex-relay/mycodex-relay tenant rotate-secret \
@@ -135,13 +138,14 @@ sudo /opt/mycodex-relay/mycodex-relay tenant rotate-secret \
   --tenant xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
-轮换后，旧密钥立即失效，需要在 Windows 客户端保存新密钥。
+轮换后旧密钥立即失效，需要在 Windows 客户端保存新密钥。
 
 ## 6. 升级
 
-上传新版 `mycodex-relay` 和脚本，然后运行：
+上传新版 `mycodex-relay` 和 `deploy-relay.sh`，然后运行：
 
 ```bash
+chmod +x mycodex-relay deploy-relay.sh
 sudo ./deploy-relay.sh upgrade --binary ./mycodex-relay
 ```
 
@@ -211,18 +215,9 @@ sudo certbot renew --dry-run
 - CLI 显示错误协议：公网由 Nginx 提供 HTTPS 时，配置必须包含 `"publicTls": true`。
 - 证书申请失败：先确认 DNS 已生效，且 TCP 80、443 能从公网访问。
 
-## 9. Windows 和 macOS
+## 9. 让 AI 完成部署
 
-发行包已经包含启动、停止和查看信息脚本：
-
-- Windows：`start-relay.bat`、`start-relay-silent.vbs`、`stop-relay.bat`、`show-relay-info.bat`
-- macOS：`start-relay.command`、`stop-relay.command`、`show-relay-info.command`
-
-这些脚本适合内置服务开发、本地测试和受控网络。要把 Windows 或 macOS 作为正式公网服务器，还必须另外配置系统服务、可信 TLS 证书、自动续期、防火墙和 WebSocket 反向代理；当前自动化部署基线是 Linux，避免给用户一套无法稳定维护证书的“伪一键”方案。
-
-## 10. 让 AI 完成部署
-
-可以把以下任务直接交给具有终端和 SSH 能力的 AI：
+可以把以下任务交给具有终端和 SSH 能力的 AI：
 
 ```text
 请部署 MyCodex Relay：
