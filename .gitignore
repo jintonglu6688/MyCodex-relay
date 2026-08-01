@@ -2,6 +2,7 @@
 /bin/
 /dist/
 /build/
+/artifacts/
 
 # Go
 *.test
