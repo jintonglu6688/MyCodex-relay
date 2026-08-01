@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	authsvc "github.com/mycodex/mycodex-relay/internal/auth"
@@ -28,6 +29,7 @@ const (
 	closeRouteMissing = websocket.StatusCode(4004)
 	closeIdentity     = websocket.StatusCode(4008)
 	closeReplaced     = websocket.StatusCode(4009)
+	relayWriteTimeout = 15 * time.Second
 )
 
 type Server struct {
@@ -374,7 +376,9 @@ func (s *Server) routeFrame(sender *webSocketSession, frame protocol.RelayFrame,
 func (ws *webSocketSession) writeRaw(data []byte) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
-	return ws.conn.Write(context.Background(), websocket.MessageText, data)
+	ctx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
+	defer cancel()
+	return ws.conn.Write(ctx, websocket.MessageText, data)
 }
 func closeSocket(conn *websocket.Conn, code websocket.StatusCode, reason string) {
 	_ = conn.Close(code, reason)
