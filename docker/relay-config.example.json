@@ -1,0 +1,25 @@
+{
+  "listenHost": "0.0.0.0",
+  "listenPort": 38443,
+  "publicHost": "relay.example.com",
+  "publicPort": 443,
+  "publicTls": true,
+  "statePath": "/var/lib/mycodex-relay/relay-state.db",
+  "tls": {
+    "enabled": false,
+    "certFile": "",
+    "keyFile": ""
+  },
+  "defaultQuota": {
+    "maxWindowsHosts": 4,
+    "maxDevicesPerHost": 8,
+    "maxConcurrentSessions": 16,
+    "maxMessageBytes": 11534336,
+    "maxFileBytes": 104857600,
+    "maxFileTransfers": 2,
+    "pairingInvitesPerHour": 30,
+    "pairingAttemptsPerMinute": 240,
+    "idleTimeoutSeconds": 120,
+    "sessionResumeSeconds": 60
+  }
+}

@@ -78,6 +78,8 @@ job runs `scripts\build.ps1 -Version 0.1.0-ci`; the Linux job runs
 End-user release resources are under [`resources/release`](resources/release).
 Linux production deployment instructions are in
 [`resources/release/linux/DEPLOYMENT.md`](resources/release/linux/DEPLOYMENT.md).
+The release version is defined once in [`VERSION`](VERSION). Build scripts use
+that value when no explicit development or CI version is supplied.
 
 ### Windows embedded mode
 
@@ -92,19 +94,19 @@ Linux production deployment instructions are in
 Windows:
 
 ```powershell
-scripts\build.ps1 -Version 0.1.0-dev
+scripts\build.ps1
 ```
 
 or:
 
 ```bat
-build_all.bat 0.1.0-dev
+build_all.bat
 ```
 
 Linux/macOS:
 
 ```bash
-sh scripts/build.sh 0.1.0-dev
+sh scripts/build.sh
 ```
 
 Build outputs are grouped by platform and packaged as self-contained release
@@ -112,6 +114,9 @@ archives:
 
 ```text
 dist/
+  mycodex-relay-0.1.0-docker-linux-amd64.tar.gz
+  mycodex-relay-0.1.0-docker-linux-arm64.tar.gz
+  DOCKER-SHA256SUMS.txt
   mycodex-relay-0.1.0-windows-x64.zip
   mycodex-relay-0.1.0-linux-x64.tar.gz
   mycodex-relay-0.1.0-linux-arm64.tar.gz
@@ -150,9 +155,74 @@ Every archive contains the matching binary, platform scripts, `README.md`,
 `DEPLOYMENT.md`, and `VERSION.txt`. Verify a downloaded archive against
 `SHA256SUMS.txt` before deployment.
 
+## Docker
+
+Docker uses a multi-stage image and supports `linux/amd64` and `linux/arm64`.
+The default Compose deployment runs one non-root Relay instance, publishes its
+plain HTTP/WebSocket listener only on host loopback, and persists the database,
+Relay identity, and migration backups in one named volume.
+
+See [`docker/README.md`](docker/README.md) for configuration, first-tenant
+creation, reverse proxy, upgrade, and backup instructions.
+
+Build the two loadable Docker release bundles on a machine with Docker Buildx:
+
+```powershell
+scripts\docker\Build-DockerRelease.ps1
+```
+
+The same script can use a remote Docker builder over SSH. The remote Docker
+executable must be given as an absolute path when it is not on the SSH login
+PATH:
+
+```powershell
+scripts\docker\Build-DockerRelease.ps1 `
+  -DockerHost "user@docker-builder" `
+  -RemoteDockerCommand "/usr/local/bin/docker"
+```
+
 After extracting on Linux, run `chmod +x mycodex-relay *.sh`; on macOS, run
 `chmod +x mycodex-relay *.command`.
 
 The Windows and macOS start scripts run `serve` from the platform directory. With no argument they prefer `relay-config.local.json` when it exists, otherwise they use `relay-config.json`. If the selected config does not exist, the script creates a default local config with `relay-state.db` as the state file before starting the relay. Logs are written to `relay.out.log` and `relay.err.log`.
 
 Use `show-relay-info.bat` on Windows or `show-relay-info.command` on macOS to display the local registration information, including listen/public ports, relay URL, health URL, and tenant IDs. If no tenant exists, the script creates a `Local` tenant and prints the newly generated tenant secret once. Existing tenant secrets are not recoverable; use `tenant rotate-secret` to explicitly generate a replacement secret.
+
+## GitCode binary release
+
+Relay releases use immutable GitCode tags named `relay-v<version>`. A release
+contains the five native platform archives, two loadable Docker bundles, and
+their checksum files; the Relay source repository is never pushed to GitCode.
+
+Prepare and validate all release assets without publishing:
+
+```powershell
+scripts\gitcode\Publish-GitCodeRelayRelease.ps1 `
+  -PrepareOnly `
+  -DockerHost "user@docker-builder"
+```
+
+Publish after committing the version and release changes so the source working
+tree is clean:
+
+```powershell
+scripts\gitcode\Publish-GitCodeRelayRelease.ps1 `
+  -DockerHost "user@docker-builder" `
+  -ReleaseNotesZhCn "MyCodex Relay 0.1.0"
+```
+
+The token is read from `GITCODE_TOKEN` or Git Credential Manager. If the
+version tag already exists, the script verifies every public asset against the
+local candidate and refuses to replace different content. Increase `VERSION`
+for every new binary release.
+
+Every attachment has a versioned direct URL with this fixed rule:
+
+```text
+https://api.gitcode.com/api/v5/repos/<owner>/<repo>/releases/relay-v<version>/attach_files/<file-name>/download
+```
+
+The default public distribution repository is `gcw_SpGZ48lW/mycodex-updates`.
+The versioned tag and file names are immutable, so these URLs are suitable for
+the desktop client's download list. They intentionally do not pretend that a
+GitCode Release attachment is an OCI registry.

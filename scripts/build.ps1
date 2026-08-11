@@ -1,13 +1,16 @@
 param(
-    [string]$Version = "dev"
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
+}
 if ($Version -notmatch '^[A-Za-z0-9._-]+$') {
     throw "Version may contain only letters, numbers, dots, underscores, and hyphens."
 }
 
-$root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $dist = Join-Path $root "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Get-ChildItem -LiteralPath $dist -File -ErrorAction SilentlyContinue |

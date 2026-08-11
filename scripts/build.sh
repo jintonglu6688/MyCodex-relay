@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-VERSION="${1:-dev}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="${1:-$(cat "$ROOT/VERSION")}"
 DIST="$ROOT/dist"
 case "$VERSION" in
   ""|*[!A-Za-z0-9._-]*)

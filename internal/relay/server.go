@@ -30,6 +30,7 @@ const (
 	closeIdentity     = websocket.StatusCode(4008)
 	closeReplaced     = websocket.StatusCode(4009)
 	relayWriteTimeout = 15 * time.Second
+	shutdownTimeout   = 15 * time.Second
 )
 
 type Server struct {
@@ -45,10 +46,14 @@ type Server struct {
 	mu                sync.RWMutex
 	hosts             map[string]*webSocketSession
 	devices           map[string]*webSocketSession
+	shuttingDown      bool
+	webSocketWG       sync.WaitGroup
+	shutdownOnce      sync.Once
+	webSocketsDone    chan struct{}
 }
 
 func NewServer(cfg config.Config) *Server {
-	s := &Server{config: cfg, mux: http.NewServeMux(), hosts: map[string]*webSocketSession{}, devices: map[string]*webSocketSession{}, challengeAttempts: map[string]challengeAttempt{}}
+	s := &Server{config: cfg, mux: http.NewServeMux(), hosts: map[string]*webSocketSession{}, devices: map[string]*webSocketSession{}, challengeAttempts: map[string]challengeAttempt{}, webSocketsDone: make(chan struct{})}
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/.well-known/mycodex-relay", s.handleMetadata)
 	s.mux.HandleFunc("/v1/ws", s.handleWebSocket)
@@ -118,17 +123,65 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 }
 func (s *Server) serve(ctx context.Context, listener net.Listener, tlsConfig *tls.Config) error {
 	httpServer := &http.Server{Handler: s.Handler(), TLSConfig: tlsConfig}
-	go func() { <-ctx.Done(); _ = httpServer.Shutdown(context.Background()) }()
+	serveCtx, cancel := context.WithCancel(ctx)
+	shutdownDone := make(chan error, 1)
+	go func() {
+		<-serveCtx.Done()
+		shutdownDone <- s.shutdown(httpServer)
+	}()
 	var err error
 	if tlsConfig != nil {
 		err = httpServer.ServeTLS(listener, "", "")
 	} else {
 		err = httpServer.Serve(listener)
 	}
-	if err == http.ErrServerClosed {
-		return nil
+	cancel()
+	shutdownErr := <-shutdownDone
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
-	return err
+	return shutdownErr
+}
+func (s *Server) shutdown(httpServer *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	webSocketsDone := s.beginShutdown()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown HTTP server: %w", err)
+	}
+	select {
+	case <-webSocketsDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for WebSocket handlers: %w", ctx.Err())
+	}
+}
+func (s *Server) beginShutdown() <-chan struct{} {
+	s.shutdownOnce.Do(func() {
+		unique := make(map[*webSocketSession]struct{})
+		s.mu.Lock()
+		s.shuttingDown = true
+		for _, active := range s.hosts {
+			unique[active] = struct{}{}
+		}
+		for _, active := range s.devices {
+			unique[active] = struct{}{}
+		}
+		clear(s.hosts)
+		clear(s.devices)
+		s.mu.Unlock()
+
+		active := make([]*webSocketSession, 0, len(unique))
+		for item := range unique {
+			active = append(active, item)
+		}
+		closeSessions(active, websocket.StatusGoingAway, "server_shutdown")
+		go func() {
+			s.webSocketWG.Wait()
+			close(s.webSocketsDone)
+		}()
+	})
+	return s.webSocketsDone
 }
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -152,11 +205,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(protocol.WireFrameLimit(s.config.DefaultQuota.MaxMessageBytes))
 	ws := &webSocketSession{session: active, conn: conn}
-	if !s.addSession(ws) {
+	if !s.beginWebSocket(ws) {
 		closeSocket(conn, closeIdentity, "identity_or_direction_mismatch")
 		return
 	}
-	defer func() { s.removeSession(ws); closeSocket(conn, websocket.StatusNormalClosure, "") }()
+	defer func() {
+		s.removeSession(ws)
+		closeSocket(conn, websocket.StatusNormalClosure, "")
+		s.webSocketWG.Done()
+	}()
 	for {
 		messageType, data, err := conn.Read(r.Context())
 		if err != nil {
@@ -257,10 +314,16 @@ type webSocketSession struct {
 }
 
 func (s *Server) addSession(ws *webSocketSession) bool {
+	return s.addSessionWithLifecycle(ws, false)
+}
+func (s *Server) beginWebSocket(ws *webSocketSession) bool {
+	return s.addSessionWithLifecycle(ws, true)
+}
+func (s *Server) addSessionWithLifecycle(ws *webSocketSession, trackLifecycle bool) bool {
 	var closeList []*webSocketSession
 	key := deviceKey(ws.session.TenantID, ws.session.HostID, ws.session.DeviceID)
 	s.mu.Lock()
-	if !s.routeActiveLocked(ws.session) {
+	if s.shuttingDown || !s.routeActiveLocked(ws.session) {
 		s.mu.Unlock()
 		return false
 	}
@@ -284,6 +347,9 @@ func (s *Server) addSession(ws *webSocketSession) bool {
 	default:
 		s.mu.Unlock()
 		return false
+	}
+	if trackLifecycle {
+		s.webSocketWG.Add(1)
 	}
 	s.mu.Unlock()
 	closeSessions(closeList, closeReplaced, "peer_replaced")

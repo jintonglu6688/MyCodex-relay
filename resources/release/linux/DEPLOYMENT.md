@@ -2,7 +2,8 @@
 
 本文适用于 `linux-x64` 和 `linux-arm64` 发布包。正式公网服务推荐使用 Ubuntu 22.04/24.04 或 Debian 12，并通过包内的 `deploy-relay.sh` 部署。
 
-当前不提供 Docker 部署。一键脚本只自动管理 Ubuntu/Debian，避免用未经验证的流程修改其他发行版。
+Docker 部署使用仓库根目录的 `Dockerfile`、`compose.yaml` 和 `docker/README.md`。
+本文的一键脚本只自动管理 Ubuntu/Debian 上的二进制服务，避免用未经验证的流程修改其他发行版。
 
 ## 1. 选择正确的包
 

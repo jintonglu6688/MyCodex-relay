@@ -3,6 +3,7 @@
 /dist/
 /build/
 /artifacts/
+/backup/
 
 # Go
 *.test
@@ -21,6 +22,7 @@ relay-state*.db-*
 # Local configuration
 relay-config.local.json
 *.local.json
+docker/relay-config.json
 
 # OS/editor
 .DS_Store
