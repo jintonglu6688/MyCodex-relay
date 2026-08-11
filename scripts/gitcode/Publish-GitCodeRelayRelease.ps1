@@ -12,10 +12,6 @@ param(
 
     [string]$ReleaseNotesEnUs = "",
 
-    [string]$DockerHost,
-
-    [string]$RemoteDockerCommand = "/usr/local/bin/docker",
-
     [switch]$PrepareOnly,
 
     [switch]$SkipBuild
@@ -37,17 +33,12 @@ if ([string]::IsNullOrWhiteSpace($RepoUrl)) {
 $releaseTag = "relay-v$version"
 $dist = Join-Path $repoRoot "dist"
 $nativeChecksumPath = Join-Path $dist "SHA256SUMS.txt"
-$dockerChecksumPath = Join-Path $dist "DOCKER-SHA256SUMS.txt"
 $nativeArchiveNames = @(
     "mycodex-relay-$version-windows-x64.zip",
     "mycodex-relay-$version-linux-x64.tar.gz",
     "mycodex-relay-$version-linux-arm64.tar.gz",
     "mycodex-relay-$version-macos-intel.tar.gz",
     "mycodex-relay-$version-macos-apple-silicon.tar.gz"
-)
-$dockerArchiveNames = @(
-    "mycodex-relay-$version-docker-linux-amd64.tar.gz",
-    "mycodex-relay-$version-docker-linux-arm64.tar.gz"
 )
 $apiBase = "https://api.gitcode.com/api/v5/repos/$Owner/$Repo"
 $script:CachedGitCodeToken = $null
@@ -215,10 +206,7 @@ function Get-ChecksummedCandidates {
 }
 
 function Get-ReleaseCandidates {
-    $candidates = @()
-    $candidates += @(Get-ChecksummedCandidates -ChecksumPath $nativeChecksumPath -ArchiveNames $nativeArchiveNames)
-    $candidates += @(Get-ChecksummedCandidates -ChecksumPath $dockerChecksumPath -ArchiveNames $dockerArchiveNames)
-    return $candidates
+    return @(Get-ChecksummedCandidates -ChecksumPath $nativeChecksumPath -ArchiveNames $nativeArchiveNames)
 }
 
 $sourceRemotes = @(& git -C $repoRoot remote)
@@ -231,12 +219,6 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) {
         throw "Relay release build failed."
     }
-    $dockerBuildArguments = @{ Version = $version }
-    if (-not [string]::IsNullOrWhiteSpace($DockerHost)) {
-        $dockerBuildArguments.DockerHost = $DockerHost
-        $dockerBuildArguments.RemoteDockerCommand = $RemoteDockerCommand
-    }
-    & (Join-Path $repoRoot "scripts\docker\Build-DockerRelease.ps1") @dockerBuildArguments
 }
 $candidates = @(Get-ReleaseCandidates)
 

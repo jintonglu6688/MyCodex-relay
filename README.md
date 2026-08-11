@@ -114,9 +114,6 @@ archives:
 
 ```text
 dist/
-  mycodex-relay-0.1.0-docker-linux-amd64.tar.gz
-  mycodex-relay-0.1.0-docker-linux-arm64.tar.gz
-  DOCKER-SHA256SUMS.txt
   mycodex-relay-0.1.0-windows-x64.zip
   mycodex-relay-0.1.0-linux-x64.tar.gz
   mycodex-relay-0.1.0-linux-arm64.tar.gz
@@ -165,10 +162,11 @@ Relay identity, and migration backups in one named volume.
 See [`docker/README.md`](docker/README.md) for configuration, first-tenant
 creation, reverse proxy, upgrade, and backup instructions.
 
-Build the two loadable Docker release bundles on a machine with Docker Buildx:
+Publish the versioned multi-platform image to Tencent Cloud TCR from a machine
+that is already logged in to `ccr.ccs.tencentyun.com`:
 
 ```powershell
-scripts\docker\Build-DockerRelease.ps1
+scripts\docker\Publish-TcrImage.ps1
 ```
 
 The same script can use a remote Docker builder over SSH. The remote Docker
@@ -176,10 +174,15 @@ executable must be given as an absolute path when it is not on the SSH login
 PATH:
 
 ```powershell
-scripts\docker\Build-DockerRelease.ps1 `
+scripts\docker\Publish-TcrImage.ps1 `
   -DockerHost "user@docker-builder" `
   -RemoteDockerCommand "/usr/local/bin/docker"
 ```
+
+The published image is
+`ccr.ccs.tencentyun.com/mycodex/mycodex-relay:<version>`. It contains one OCI
+manifest for `linux/amd64` and `linux/arm64`; Docker automatically selects the
+matching image when Compose pulls it.
 
 After extracting on Linux, run `chmod +x mycodex-relay *.sh`; on macOS, run
 `chmod +x mycodex-relay *.command`.
@@ -191,15 +194,15 @@ Use `show-relay-info.bat` on Windows or `show-relay-info.command` on macOS to di
 ## GitCode binary release
 
 Relay releases use immutable GitCode tags named `relay-v<version>`. A release
-contains the five native platform archives, two loadable Docker bundles, and
-their checksum files; the Relay source repository is never pushed to GitCode.
+contains the five native platform archives and `SHA256SUMS.txt`; the Relay
+source repository is never pushed to GitCode. Docker images are distributed
+separately through Tencent Cloud TCR.
 
 Prepare and validate all release assets without publishing:
 
 ```powershell
 scripts\gitcode\Publish-GitCodeRelayRelease.ps1 `
-  -PrepareOnly `
-  -DockerHost "user@docker-builder"
+  -PrepareOnly
 ```
 
 Publish after committing the version and release changes so the source working
@@ -207,7 +210,6 @@ tree is clean:
 
 ```powershell
 scripts\gitcode\Publish-GitCodeRelayRelease.ps1 `
-  -DockerHost "user@docker-builder" `
   -ReleaseNotesZhCn "MyCodex Relay 0.1.0"
 ```
 
@@ -224,5 +226,4 @@ https://api.gitcode.com/api/v5/repos/<owner>/<repo>/releases/relay-v<version>/at
 
 The default public distribution repository is `gcw_SpGZ48lW/mycodex-updates`.
 The versioned tag and file names are immutable, so these URLs are suitable for
-the desktop client's download list. They intentionally do not pretend that a
-GitCode Release attachment is an OCI registry.
+the desktop client's download list.

@@ -27,7 +27,6 @@ ARG REVISION=unknown
 
 LABEL org.opencontainers.image.title="MyCodex Relay" \
       org.opencontainers.image.description="Relay service for MyCodex remote connections" \
-      org.opencontainers.image.source="https://github.com/jintonglu6688/MyCodex-relay" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 

@@ -2,7 +2,7 @@ name: mycodex-relay
 
 services:
   relay:
-    image: mycodex-relay:${MYCODEX_RELAY_VERSION}
+    image: ccr.ccs.tencentyun.com/mycodex/mycodex-relay:${MYCODEX_RELAY_VERSION:-0.1.0}
     restart: unless-stopped
     stop_grace_period: 20s
     ports:

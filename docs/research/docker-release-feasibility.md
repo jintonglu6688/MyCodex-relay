@@ -4,7 +4,9 @@
 
 实施状态：`SIGTERM`/WebSocket 优雅停止已经修复；Docker Compose 已在 Apple
 Silicon Mac 的 OrbStack 环境完成 ARM64、AMD64、健康检查、非 root、只读根文件
-系统、持久卷、正常停止、身份持久化和容器重建升级验证。
+系统、持久卷、正常停止、身份持久化和容器重建升级验证。正式分发已确定使用
+腾讯云 TCR 公有仓库，不再提供新的离线镜像包。`0.1.0` 多架构镜像已发布，
+并通过无 TCR 凭据环境完成匿名清单读取、双架构拉取和版本运行验证。
 
 ## 结论
 
@@ -16,7 +18,7 @@ Silicon Mac 的 OrbStack 环境完成 ARM64、AMD64、健康检查、非 root、
 - TLS 继续交给宿主机或同一 Compose 网络中的 Nginx/Caddy/Traefik；Relay 镜像只暴露内部端口 `38443`。
 - 配置文件只读挂载；SQLite、Relay identity 和迁移备份放在同一个可写持久卷。
 - 正式镜像同时构建 `linux/amd64` 和 `linux/arm64`。
-- GitCode Release 可以分发镜像归档，但目前无法从 GitCode 官方公开资料确认其提供 OCI Registry，不能承诺 `docker pull gitcode...`。
+- 正式镜像发布到腾讯云 TCR，用户通过 Compose 直接在线拉取；GitCode 只分发原生平台二进制。
 
 评估时发现的代码阻断项是优雅停止；该问题已经修复并通过真实 Linux
 `SIGTERM` 与 Docker Compose 停止验证。当前可以进入 Docker 发布集成阶段。
@@ -188,7 +190,7 @@ docker buildx build \
 
 Docker 官方指出镜像 tag 可以变动；需要可复现部署时应使用具体版本或 digest。[Docker 构建最佳实践：pin base image](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions)
 
-## 8. GitCode 分发边界
+## 8. 正式分发边界
 
 截至本报告日期，从 GitCode 官方公开资料中**未能验证 GitCode 提供自有 OCI/Container Registry**。GitCode 流水线文档可以消费外部 Registry 镜像，但示例使用 `myregistry.example.com`，没有给出 GitCode 自有 Registry 地址、认证方式或 OCI push/pull 协议。[GitCode 流水线镜像配置](https://docs.gitcode.com/docs/help/home/org_project/pipeline/runner-management/configuring-images-toolchains/)
 
@@ -199,25 +201,15 @@ Docker 官方指出镜像 tag 可以变动；需要可复现部署时应使用�
 
 把容器镜像 tar 上传到 GitCode Release，不会让它自动变成可 `docker pull` 的镜像仓库。Docker 官方定义的 Registry 推送需要 `docker buildx build --push` 指向 Registry；本地 OCI/Docker layout 则由 exporter 输出到 tar 文件。[Docker exporters](https://docs.docker.com/build/exporters/)、[Docker image save](https://docs.docker.com/reference/cli/docker/image/save/)
 
-在确认 Registry 前有两个诚实可用的发布方案：
-
-### 方案 A：GitCode Release 镜像归档（符合当前 GitCode 二进制发布链）
-
-分别发布：
+正式方案使用腾讯云 TCR 公有仓库：
 
 ```text
-mycodex-relay-0.1.0-docker-linux-amd64.tar.gz
-mycodex-relay-0.1.0-docker-linux-arm64.tar.gz
-SHA256SUMS.txt
+ccr.ccs.tencentyun.com/mycodex/mycodex-relay:<version>
 ```
 
-用户按架构下载并校验部署包，解压后对包内 `mycodex-relay-image.tar` 执行 `docker load`，再运行 Compose。部署包同时携带无构建段的 Compose 文件、配置示例和部署说明，不包含源码。优点是能直接接入当前不可变 GitCode Release 和固定下载直链；缺点是不能 `docker pull`，升级要先下载并 load。
-
-### 方案 B：使用已验证的 OCI Registry（推荐长期方案）
-
-将多架构镜像推送到一个明确支持 OCI manifest 的 Registry；GitCode Release 继续保存版本说明、Compose 示例、digest 和下载入口。这样用户可以直接按固定规则 `docker pull <image>:0.1.0`。
-
-在获得 GitCode 官方 Registry 地址和文档前，不在发布脚本中猜测 Registry endpoint。
+每个版本标签包含 `linux/amd64` 与 `linux/arm64` 的 OCI manifest，Compose 直接
+在线拉取。GitCode Release 继续使用不可变 `relay-v<version>` 标签，但只保存五个
+原生平台二进制包和 `SHA256SUMS.txt`。不再生成或发布新的 Docker 离线包。
 
 ## 9. 升级、备份与恢复
 
@@ -250,8 +242,9 @@ Docker 官方给出的卷备份方式是用临时容器同时挂载数据卷和�
    `linux/amd64` 与 `linux/arm64` 的 OCI 多架构归档。
 4. 已验证健康检查、非 root、只读根文件系统、状态卷、正常停止、备份、身份与
    租户跨容器重建保持不变。
-5. 已把双架构镜像封装为不含源码的离线部署包，并接入现有 GitCode 不可变
-   Release 发布器；两种架构均已从最终归档重新加载验收。
+5. 已验证双架构镜像均不包含源码；正式发布改为腾讯云 TCR 多架构在线镜像。
+6. 已匿名拉取 `ccr.ccs.tencentyun.com/mycodex/mycodex-relay:0.1.0`，并确认
+   AMD64、ARM64 均运行并报告 `mycodex-relay 0.1.0`。
 
 ### 不是阻断，但必须写清的限制
 
@@ -259,12 +252,12 @@ Docker 官方给出的卷备份方式是用临时容器同时挂载数据卷和�
 - 默认要求外部反向代理提供公网 TLS；
 - 配置必须使用 `listenHost=0.0.0.0` 和绝对状态路径；
 - 状态卷必须整体保留 DB、identity 和迁移备份；
-- GitCode Release 离线包中的镜像 tar 只能 `docker load`，不能冒充 OCI Registry。
+- 腾讯云个人版 TCR 是共享服务，适合当前发布规模，但不承诺企业级 SLA。
 
 ### 后续发布改动
 
-1. 已在现有构建/发布脚本中增加 AMD64/ARM64 离线部署包和独立 SHA；
-2. 首版已采用 GitCode Release 双架构离线部署包；如后续获得经过验证的 OCI Registry，再额外提供 `docker pull`，不替换不可变下载包；
+1. Docker 发布脚本向腾讯云 TCR 推送 AMD64/ARM64 多架构镜像；
+2. GitCode 发布脚本只处理原生平台二进制和校验文件；
 3. 发布 RC 前通过实际反向代理完成公网 TLS/WebSocket 端到端验证。
 
 无需新增配置框架、数据库容器、入口脚本、Kubernetes manifests 或自动扩缩容。首版把单实例 Docker Compose 做稳即可。
