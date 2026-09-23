@@ -73,6 +73,10 @@ GitHub Actions runs `go test ./... -count=1` on Windows and Linux. The Windows
 job runs `scripts\build.ps1 -Version 0.1.0-ci`; the Linux job runs
 `sh scripts/build.sh 0.1.0-ci`.
 
+The Release workflow builds and publishes all platform packages plus SHA256SUMS.txt
+for a relay-v tag matching VERSION. It also supports manual dispatch for an
+existing tag, such as relay-v0.1.0.
+
 ## Build
 
 End-user release resources are under [`resources/release`](resources/release).

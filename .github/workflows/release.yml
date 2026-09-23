@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - relay-v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing relay-v tag to publish
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Verify version
+        shell: pwsh
+        env:
+          RELAY_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($env:RELAY_TAG -ne "relay-v$version") {
+            throw "Tag $env:RELAY_TAG does not match VERSION $version."
+          }
+
+      - name: Test
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Build packages and checksums
+        shell: pwsh
+        run: scripts\build.ps1
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELAY_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $assets = @(Get-ChildItem dist -File | Where-Object {
+            $_.Name -match '^mycodex-relay-.*\.(zip|tar\.gz)$' -or $_.Name -eq 'SHA256SUMS.txt'
+          } | ForEach-Object FullName)
+          if ($assets.Count -ne 6) {
+            throw "Expected five packages and SHA256SUMS.txt, found $($assets.Count) assets."
+          }
+          gh release create $env:RELAY_TAG @assets --verify-tag --title $env:RELAY_TAG --generate-notes
