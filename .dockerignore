@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.vscode
+artifacts
+backup
+build
+dist
+coverage
+*.exe
+*.log
+*.pid
+*.db
+*.db-*
+relay-config.json
+relay-config.local.json
+docker/relay-config.json

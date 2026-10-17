@@ -1,0 +1,33 @@
+# Build outputs
+/bin/
+/dist/
+/build/
+/artifacts/
+/backup/
+
+# Go
+*.test
+*.out
+coverage/
+coverage.out
+
+# Relay runtime state
+relay-state.db
+relay-state.db-*
+relay-state*.db
+relay-state*.db-*
+*.log
+*.pid
+
+# Local configuration
+relay-config.local.json
+*.local.json
+docker/relay-config.json
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
